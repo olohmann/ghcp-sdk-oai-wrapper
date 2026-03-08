@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,7 +19,17 @@ import (
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/middleware"
 )
 
+// version is set at build time via ldflags:
+//
+//	go build -ldflags "-X main.version=1.2.3"
+var version = "dev"
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" {
+		fmt.Println(version)
+		os.Exit(0)
+	}
+
 	cfg := config.Load()
 
 	logLevel := slog.LevelInfo
@@ -31,6 +42,7 @@ func main() {
 		logLevel = slog.LevelError
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
+	logger.Info("ghcp-sdk-oai-wrapper", "version", version)
 
 	// Initialize Copilot SDK client
 	client := copilot.NewClient(cfg.CopilotCLIPath, cfg.GitHubToken, logger)
