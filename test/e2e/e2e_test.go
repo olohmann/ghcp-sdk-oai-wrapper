@@ -371,6 +371,134 @@ func TestChatCompletions_WithSystemMessage(t *testing.T) {
 	t.Logf("pirate response: %s", body.Choices[0].Message.Content)
 }
 
+func TestChatCompletions_MultimodalImageURL(t *testing.T) {
+	// Minimal 1x1 red PNG (base64-encoded)
+	const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+
+	payload := fmt.Sprintf(`{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "What color is the single pixel in this image? Reply with just the color name."},
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,%s"}}
+			]}
+		]
+	}`, tinyPNGBase64)
+
+	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("multimodal request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertStatus(t, resp, http.StatusOK)
+	assertContentType(t, resp, "application/json")
+
+	var body struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Choices []struct {
+			Index        int    `json:"index"`
+			FinishReason string `json:"finish_reason"`
+			Message      struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	decodeJSON(t, resp.Body, &body)
+
+	if body.Object != "chat.completion" {
+		t.Errorf("expected object=chat.completion, got %s", body.Object)
+	}
+	if len(body.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	if body.Choices[0].Message.Role != "assistant" {
+		t.Errorf("expected role=assistant, got %s", body.Choices[0].Message.Role)
+	}
+	if body.Choices[0].Message.Content == "" {
+		t.Error("expected non-empty content for multimodal response")
+	}
+	if body.Choices[0].FinishReason != "stop" {
+		t.Errorf("expected finish_reason=stop, got %s", body.Choices[0].FinishReason)
+	}
+	t.Logf("multimodal response: %s", body.Choices[0].Message.Content)
+}
+
+func TestChatCompletions_MultimodalImageURL_Streaming(t *testing.T) {
+	const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+
+	payload := fmt.Sprintf(`{
+		"model": "gpt-4o",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "What color is the single pixel in this image? Reply with just the color name."},
+				{"type": "image_url", "image_url": {"url": "data:image/png;base64,%s"}}
+			]}
+		],
+		"stream": true
+	}`, tinyPNGBase64)
+
+	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("streaming multimodal request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertStatus(t, resp, http.StatusOK)
+	assertContentType(t, resp, "text/event-stream")
+
+	scanner := bufio.NewScanner(resp.Body)
+	var chunks int
+	gotDone := false
+	var fullContent strings.Builder
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		if line == "data: [DONE]" {
+			gotDone = true
+			break
+		}
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			t.Fatalf("failed to parse chunk: %v", err)
+		}
+		chunks++
+
+		if choices, ok := chunk["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if delta, ok := choice["delta"].(map[string]any); ok {
+					if content, ok := delta["content"].(string); ok {
+						fullContent.WriteString(content)
+					}
+				}
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("SSE scanner error: %v", err)
+	}
+	if chunks == 0 {
+		t.Fatal("expected at least one SSE chunk")
+	}
+	if !gotDone {
+		t.Error("expected [DONE] marker")
+	}
+	if fullContent.Len() == 0 {
+		t.Error("expected non-empty streamed content for multimodal request")
+	}
+	t.Logf("received %d chunks, streamed multimodal content: %s", chunks, fullContent.String())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

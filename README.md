@@ -9,6 +9,7 @@ can use GitHub Copilot models through this wrapper without modification.
 ## Features
 
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming modes
+- **Multimodal image support** — `content` accepts the OpenAI array format with `text` and `image_url` parts (base64 data URIs)
 - **`GET /v1/models`** — lists all models available through GitHub Copilot
 - **`GET /healthz`** — health check
 - Optional **Bearer-token authentication**
@@ -81,6 +82,29 @@ curl http://localhost:8080/v1/chat/completions \
     "stream": true
   }'
 ```
+
+### Multimodal (Image Input)
+
+Send images as base64 data URIs using the OpenAI multimodal content format:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret" \
+  -d '{
+    "model": "gpt-4.1",
+    "messages": [
+      {"role": "user", "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo..."}}
+      ]}
+    ]
+  }'
+```
+
+Supported image formats: PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, HEIC, AVIF.
+
+> **Note:** Only `data:` URIs (inline base64) are supported. External `https://` image URLs are not forwarded to the model.
 
 ### List Models
 

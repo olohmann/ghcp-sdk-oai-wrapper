@@ -2,10 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -72,13 +75,13 @@ func buildPrompt(messages []oai.Message) string {
 	}
 
 	if len(nonSystem) == 1 {
-		return nonSystem[0].Content
+		return nonSystem[0].Content.TextContent()
 	}
 
 	// For multi-turn, format as a conversation prompt.
 	var sb strings.Builder
 	for _, m := range nonSystem {
-		sb.WriteString(fmt.Sprintf("[%s]: %s\n\n", m.Role, m.Content))
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n\n", m.Role, m.Content.TextContent()))
 	}
 	return sb.String()
 }
@@ -88,7 +91,7 @@ func extractSystemMessage(messages []oai.Message) string {
 	var parts []string
 	for _, m := range messages {
 		if m.Role == "system" {
-			parts = append(parts, m.Content)
+			parts = append(parts, m.Content.TextContent())
 		}
 	}
 	return strings.Join(parts, "\n")
@@ -99,8 +102,17 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 		"model", req.Model,
 		"stream", false,
 		"messages", len(req.Messages),
-		"preview", truncate(req.Messages[len(req.Messages)-1].Content, 80),
+		"preview", truncate(req.Messages[len(req.Messages)-1].Content.TextContent(), 80),
 	)
+
+	attachments, cleanup, err := extractImageAttachments(req.Messages, logger)
+	if err != nil {
+		logger.Error("failed to extract image attachments", "error", err)
+		oai.WriteError(w, http.StatusBadRequest, "failed to process image attachments: "+err.Error(), "invalid_request_error")
+		return
+	}
+	defer cleanup()
+
 	session, err := createSession(ctx, client, req, false)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
@@ -113,7 +125,8 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	defer cancel()
 
 	reply, err := session.SendAndWait(sendCtx, copilot.MessageOptions{
-		Prompt: buildPrompt(req.Messages),
+		Prompt:      buildPrompt(req.Messages),
+		Attachments: attachments,
 	})
 	if err != nil {
 		logger.Error("failed to send message", "error", err)
@@ -137,7 +150,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 				Index: 0,
 				Message: &oai.Message{
 					Role:    "assistant",
-					Content: content,
+					Content: oai.NewTextContent(content),
 				},
 				FinishReason: oai.StringPtr("stop"),
 			},
@@ -152,8 +165,17 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 		"model", req.Model,
 		"stream", true,
 		"messages", len(req.Messages),
-		"preview", truncate(req.Messages[len(req.Messages)-1].Content, 80),
+		"preview", truncate(req.Messages[len(req.Messages)-1].Content.TextContent(), 80),
 	)
+
+	attachments, cleanup, err := extractImageAttachments(req.Messages, logger)
+	if err != nil {
+		logger.Error("failed to extract image attachments", "error", err)
+		oai.WriteError(w, http.StatusBadRequest, "failed to process image attachments: "+err.Error(), "invalid_request_error")
+		return
+	}
+	defer cleanup()
+
 	sse, err := oai.NewSSEWriter(w)
 	if err != nil {
 		oai.WriteError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
@@ -163,7 +185,6 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	session, err := createSession(ctx, client, req, true)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
-		// Headers already sent for SSE, write error as event
 		_ = sse.WriteEvent(oai.ErrorResponse{
 			Error: oai.ErrorDetail{Message: "failed to create session", Type: "server_error"},
 		})
@@ -206,7 +227,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 					Choices: []oai.Choice{
 						{
 							Index: 0,
-							Delta: &oai.Message{Content: *event.Data.DeltaContent},
+							Delta: &oai.Message{Content: oai.NewTextContent(*event.Data.DeltaContent)},
 						},
 					},
 				})
@@ -223,7 +244,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 					Choices: []oai.Choice{
 						{
 							Index: 0,
-							Delta: &oai.Message{Content: *event.Data.Content},
+							Delta: &oai.Message{Content: oai.NewTextContent(*event.Data.Content)},
 						},
 					},
 				})
@@ -251,7 +272,8 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	defer unsubscribe()
 
 	_, err = session.Send(ctx, copilot.MessageOptions{
-		Prompt: buildPrompt(req.Messages),
+		Prompt:      buildPrompt(req.Messages),
+		Attachments: attachments,
 	})
 	if err != nil {
 		logger.Error("failed to send message", "error", err)
@@ -288,4 +310,116 @@ func createSession(ctx context.Context, client *wrapper.Client, req *oai.ChatCom
 	}
 
 	return client.CreateSession(ctx, cfg)
+}
+
+// mimeToExt maps common image MIME types to file extensions.
+var mimeToExt = map[string]string{
+	"image/png":  ".png",
+	"image/jpeg": ".jpg",
+	"image/gif":  ".gif",
+	"image/webp": ".webp",
+	"image/bmp":  ".bmp",
+	"image/tiff": ".tiff",
+	"image/x-icon": ".ico",
+	"image/heic": ".heic",
+	"image/avif": ".avif",
+}
+
+// parseDataURI parses a data URI (data:<mediatype>;base64,<data>) and returns
+// the MIME type and decoded bytes. Returns an error for non-base64 or invalid URIs.
+func parseDataURI(uri string) (mimeType string, data []byte, err error) {
+	if !strings.HasPrefix(uri, "data:") {
+		return "", nil, fmt.Errorf("not a data URI")
+	}
+	// data:<mediatype>;base64,<data>
+	rest := uri[len("data:"):]
+	semicolon := strings.Index(rest, ";")
+	if semicolon < 0 {
+		return "", nil, fmt.Errorf("invalid data URI: missing semicolon")
+	}
+	mimeType = rest[:semicolon]
+
+	after := rest[semicolon+1:]
+	if !strings.HasPrefix(after, "base64,") {
+		return "", nil, fmt.Errorf("unsupported data URI encoding (expected base64)")
+	}
+
+	b64 := after[len("base64,"):]
+	data, err = base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		// Retry with RawStdEncoding for unpadded base64.
+		data, err = base64.RawStdEncoding.DecodeString(b64)
+		if err != nil {
+			return "", nil, fmt.Errorf("failed to decode base64: %w", err)
+		}
+	}
+	return mimeType, data, nil
+}
+
+// extractImageAttachments scans all messages for image_url content parts with
+// data URIs, writes them to temp files, and returns Copilot SDK file attachments.
+// The returned cleanup function removes all temp files and must be deferred.
+func extractImageAttachments(messages []oai.Message, logger *slog.Logger) ([]copilot.Attachment, func(), error) {
+	var attachments []copilot.Attachment
+	var tmpFiles []string
+
+	cleanup := func() {
+		for _, f := range tmpFiles {
+			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
+				logger.Warn("failed to remove temp image file", "path", f, "error", err)
+			}
+		}
+	}
+
+	for _, msg := range messages {
+		for _, img := range msg.Content.ImageParts() {
+			url := img.ImageURL.URL
+
+			if !strings.HasPrefix(url, "data:") {
+				// Non-data URIs (e.g., https://) are not supported by the SDK file workaround.
+				logger.Warn("skipping non-data image URL (not supported)", "url", truncate(url, 60))
+				continue
+			}
+
+			mimeType, data, err := parseDataURI(url)
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("invalid image data URI: %w", err)
+			}
+
+			ext := mimeToExt[mimeType]
+			if ext == "" {
+				ext = ".bin"
+			}
+
+			tmpFile, err := os.CreateTemp("", "copilot-img-*"+ext)
+			if err != nil {
+				cleanup()
+				return nil, func() {}, fmt.Errorf("failed to create temp file: %w", err)
+			}
+
+			if _, err := tmpFile.Write(data); err != nil {
+				tmpFile.Close()
+				cleanup()
+				return nil, func() {}, fmt.Errorf("failed to write temp file: %w", err)
+			}
+			tmpFile.Close()
+
+			absPath, _ := filepath.Abs(tmpFile.Name())
+			tmpFiles = append(tmpFiles, absPath)
+
+			attachments = append(attachments, copilot.Attachment{
+				Type: copilot.File,
+				Path: &absPath,
+			})
+
+			logger.Info("extracted image attachment",
+				"mime", mimeType,
+				"size", len(data),
+				"path", absPath,
+			)
+		}
+	}
+
+	return attachments, cleanup, nil
 }
