@@ -16,6 +16,8 @@ type Config struct {
 	LogLevel string
 	// CopilotCLIPath is the path to the Copilot CLI executable.
 	CopilotCLIPath string
+	// GitHubToken is a GitHub token with Copilot scope for headless authentication.
+	GitHubToken string
 }
 
 // Load reads configuration from environment variables.
@@ -25,6 +27,7 @@ func Load() *Config {
 		APIKey:         os.Getenv("API_KEY"),
 		LogLevel:       strings.ToLower(envOrDefault("LOG_LEVEL", "info")),
 		CopilotCLIPath: os.Getenv("COPILOT_CLI_PATH"),
+		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
 	}
 }
 

@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ghcp-sdk-oai-wrapper.fullname" . }}
+  labels:
+    {{- include "ghcp-sdk-oai-wrapper.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.config.port | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  {{- if .Values.config.copilotCliPath }}
+  COPILOT_CLI_PATH: {{ .Values.config.copilotCliPath | quote }}
+  {{- end }}

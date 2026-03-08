@@ -1,0 +1,28 @@
+1. Get the application URL by running these commands:
+{{- if eq .Values.service.type "ClusterIP" }}
+  kubectl port-forward svc/{{ include "ghcp-sdk-oai-wrapper.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+{{- end }}
+
+2. Test the health endpoint:
+  curl http://localhost:{{ .Values.service.port }}/healthz
+
+3. Make a chat completion request:
+  curl http://localhost:{{ .Values.service.port }}/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    {{- if .Values.secrets.apiKey }}
+    -H "Authorization: Bearer <your-api-key>" \
+    {{- end }}
+    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}'
+
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+
+4. Prometheus metrics are available at /metrics and will be scraped by the ServiceMonitor.
+{{- else if .Values.metrics.enabled }}
+
+4. Prometheus metrics are available at /metrics. To enable automatic scraping,
+   set metrics.serviceMonitor.enabled=true (requires Prometheus Operator).
+{{- end }}
+
+IMPORTANT: Make sure the GITHUB_TOKEN secret is set with a valid GitHub token
+that has the Copilot scope. Without it, the server cannot authenticate with
+the GitHub Copilot API.

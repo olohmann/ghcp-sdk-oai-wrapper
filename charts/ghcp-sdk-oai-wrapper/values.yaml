@@ -1,0 +1,74 @@
+# Default values for ghcp-sdk-oai-wrapper
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/olohmann/ghcp-sdk-oai-wrapper
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+# Application configuration (non-sensitive)
+config:
+  port: "8080"
+  logLevel: "info"
+  copilotCliPath: ""
+
+# Sensitive configuration — stored in a Kubernetes Secret.
+# Set these via --set or a values file that is NOT committed to source control.
+secrets:
+  # Required: A GitHub token with Copilot scope for headless authentication.
+  # Create a fine-grained PAT or classic PAT with the "copilot" scope.
+  githubToken: ""
+  # Optional: Bearer token clients must send to authenticate API requests.
+  # Leave empty to disable API authentication.
+  apiKey: ""
+
+  # Use an existing secret instead of creating one.
+  # The secret must contain keys: GITHUB_TOKEN and optionally API_KEY.
+  existingSecret: ""
+
+service:
+  type: ClusterIP
+  port: 8080
+
+metrics:
+  enabled: true
+  # Prometheus Operator ServiceMonitor
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
+podSecurityContext: {}
+securityContext: {}

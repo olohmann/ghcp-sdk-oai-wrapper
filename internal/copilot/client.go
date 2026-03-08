@@ -17,12 +17,15 @@ type Client struct {
 }
 
 // NewClient creates a new Copilot SDK client wrapper.
-func NewClient(cliPath string, logger *slog.Logger) *Client {
+func NewClient(cliPath string, githubToken string, logger *slog.Logger) *Client {
 	opts := &copilot.ClientOptions{
 		LogLevel: "error",
 	}
 	if cliPath != "" {
 		opts.CLIPath = cliPath
+	}
+	if githubToken != "" {
+		opts.GitHubToken = githubToken
 	}
 
 	return &Client{
