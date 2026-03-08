@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
@@ -19,6 +20,8 @@ import (
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/oai"
 )
+
+const maxRequestBodySize = 50 * 1024 * 1024 // 50 MB
 
 // ChatCompletions returns the handler for POST /v1/chat/completions.
 func ChatCompletions(client *wrapper.Client, logger *slog.Logger) http.HandlerFunc {
@@ -29,6 +32,7 @@ func ChatCompletions(client *wrapper.Client, logger *slog.Logger) http.HandlerFu
 		}
 
 		var req oai.ChatCompletionRequest
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodySize)
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			oai.WriteError(w, http.StatusBadRequest, "invalid request body: "+err.Error(), "invalid_request_error")
 			return
@@ -210,7 +214,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 
 	done := make(chan struct{})
 	var once sync.Once
-	var gotDelta bool
+	var gotDelta atomic.Bool
 
 	// Send the initial chunk with role
 	_ = sse.WriteEvent(oai.ChatCompletionChunk{
@@ -229,7 +233,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
 		switch event.Type {
 		case copilot.AssistantMessageDelta:
-			gotDelta = true
+			gotDelta.Store(true)
 			if event.Data.DeltaContent != nil {
 				_ = sse.WriteEvent(oai.ChatCompletionChunk{
 					ID:      completionID,
@@ -247,7 +251,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 
 		case copilot.AssistantMessage:
 			// Only send the full message if we never received deltas (fallback)
-			if !gotDelta && event.Data.Content != nil {
+			if !gotDelta.Load() && event.Data.Content != nil {
 				_ = sse.WriteEvent(oai.ChatCompletionChunk{
 					ID:      completionID,
 					Object:  "chat.completion.chunk",

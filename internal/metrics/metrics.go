@@ -3,6 +3,7 @@ package metrics
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -53,8 +54,28 @@ func RecordCompletion(model string, stream bool, status string, duration time.Du
 	if stream {
 		s = "true"
 	}
-	ChatCompletionsTotal.WithLabelValues(model, s, status).Inc()
-	ChatCompletionDuration.WithLabelValues(model, s).Observe(duration.Seconds())
+	m := sanitizeModel(model)
+	ChatCompletionsTotal.WithLabelValues(m, s, status).Inc()
+	ChatCompletionDuration.WithLabelValues(m, s).Observe(duration.Seconds())
+}
+
+// sanitizeModel limits the model label to prevent unbounded cardinality.
+// Unknown models are grouped under "other" to avoid metrics explosion from
+// user-controlled input.
+func sanitizeModel(model string) string {
+	if len(model) > 64 {
+		return "other"
+	}
+	// Allow known prefixes used by Copilot models.
+	for _, prefix := range []string{
+		"gpt-", "claude-", "o1-", "o3-", "o4-",
+		"copilot-", "gemini-",
+	} {
+		if strings.HasPrefix(model, prefix) {
+			return model
+		}
+	}
+	return "other"
 }
 
 // RecordImageAttachments increments the image attachment counter.
