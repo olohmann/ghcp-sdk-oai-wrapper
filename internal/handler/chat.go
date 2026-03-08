@@ -16,6 +16,7 @@ import (
 	copilot "github.com/github/copilot-sdk/go"
 
 	wrapper "github.com/olohmann/ghcp-sdk-oai-wrapper/internal/copilot"
+	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/oai"
 )
 
@@ -98,6 +99,7 @@ func extractSystemMessage(messages []oai.Message) string {
 }
 
 func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper.Client, req *oai.ChatCompletionRequest, logger *slog.Logger) {
+	start := time.Now()
 	logger.Info("chat completion request",
 		"model", req.Model,
 		"stream", false,
@@ -108,14 +110,17 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	attachments, cleanup, err := extractImageAttachments(req.Messages, logger)
 	if err != nil {
 		logger.Error("failed to extract image attachments", "error", err)
+		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
 		oai.WriteError(w, http.StatusBadRequest, "failed to process image attachments: "+err.Error(), "invalid_request_error")
 		return
 	}
 	defer cleanup()
+	metrics.RecordImageAttachments(len(attachments))
 
 	session, err := createSession(ctx, client, req, false)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
+		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
 		oai.WriteError(w, http.StatusInternalServerError, "failed to create session", "server_error")
 		return
 	}
@@ -130,6 +135,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	})
 	if err != nil {
 		logger.Error("failed to send message", "error", err)
+		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
 		oai.WriteError(w, http.StatusInternalServerError, "failed to get completion", "server_error")
 		return
 	}
@@ -157,10 +163,12 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 		},
 	}
 
+	metrics.RecordCompletion(req.Model, false, "success", time.Since(start))
 	oai.WriteJSON(w, http.StatusOK, resp)
 }
 
 func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper.Client, req *oai.ChatCompletionRequest, logger *slog.Logger) {
+	start := time.Now()
 	logger.Info("chat completion request",
 		"model", req.Model,
 		"stream", true,
@@ -171,13 +179,16 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	attachments, cleanup, err := extractImageAttachments(req.Messages, logger)
 	if err != nil {
 		logger.Error("failed to extract image attachments", "error", err)
+		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
 		oai.WriteError(w, http.StatusBadRequest, "failed to process image attachments: "+err.Error(), "invalid_request_error")
 		return
 	}
 	defer cleanup()
+	metrics.RecordImageAttachments(len(attachments))
 
 	sse, err := oai.NewSSEWriter(w)
 	if err != nil {
+		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
 		oai.WriteError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
 		return
 	}
@@ -185,6 +196,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	session, err := createSession(ctx, client, req, true)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
+		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
 		_ = sse.WriteEvent(oai.ErrorResponse{
 			Error: oai.ErrorDetail{Message: "failed to create session", Type: "server_error"},
 		})
@@ -251,6 +263,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 			}
 
 		case copilot.SessionIdle:
+			metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
 			// Send the final chunk with finish_reason
 			_ = sse.WriteEvent(oai.ChatCompletionChunk{
 				ID:      completionID,
@@ -277,6 +290,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	})
 	if err != nil {
 		logger.Error("failed to send message", "error", err)
+		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
 		_ = sse.WriteDone()
 		once.Do(func() { close(done) })
 		return

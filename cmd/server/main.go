@@ -9,9 +9,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/config"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/copilot"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/handler"
+	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/middleware"
 )
 
@@ -30,7 +33,7 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: logLevel}))
 
 	// Initialize Copilot SDK client
-	client := copilot.NewClient(cfg.CopilotCLIPath, logger)
+	client := copilot.NewClient(cfg.CopilotCLIPath, cfg.GitHubToken, logger)
 	if err := client.Start(context.Background()); err != nil {
 		logger.Error("failed to start Copilot client", "error", err)
 		os.Exit(1)
@@ -42,12 +45,13 @@ func main() {
 	mux.HandleFunc("/healthz", handler.Health())
 	mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions(client, logger))
 	mux.HandleFunc("/v1/models", handler.Models(client, logger))
+	mux.Handle("/metrics", promhttp.Handler())
 
-	// Apply auth middleware
+	// Apply middleware: metrics first (all requests), then auth (skips /healthz and /metrics)
 	authMiddleware := middleware.Auth(cfg.APIKey)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      authMiddleware(mux),
+		Handler:      metrics.Middleware(authMiddleware(mux)),
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 10 * time.Minute, // Long timeout for streaming
 		IdleTimeout:  120 * time.Second,

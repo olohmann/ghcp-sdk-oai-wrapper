@@ -9,9 +9,16 @@ import (
 
 // Auth returns middleware that validates Bearer token authentication.
 // If apiKey is empty, authentication is disabled and all requests pass through.
+// The /healthz and /metrics endpoints are always exempt from authentication.
 func Auth(apiKey string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Allow health and metrics endpoints without auth
+			if r.URL.Path == "/healthz" || r.URL.Path == "/metrics" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			if apiKey == "" {
 				next.ServeHTTP(w, r)
 				return

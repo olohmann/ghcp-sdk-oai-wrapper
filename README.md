@@ -12,10 +12,12 @@ can use GitHub Copilot models through this wrapper without modification.
 - **Multimodal image support** — `content` accepts the OpenAI array format with `text` and `image_url` parts (base64 data URIs)
 - **`GET /v1/models`** — lists all models available through GitHub Copilot
 - **`GET /healthz`** — health check
+- **`GET /metrics`** — Prometheus-compatible metrics endpoint
 - Optional **Bearer-token authentication**
+- **Headless authentication** via `GITHUB_TOKEN` for CI/CD and Kubernetes deployments
 - Structured JSON logging via `log/slog`
 - Graceful shutdown on SIGINT/SIGTERM
-- Zero external dependencies beyond stdlib + Copilot SDK
+- **Helm chart** for Kubernetes deployment
 
 ## Prerequisites
 
@@ -50,6 +52,7 @@ Run `make help` for all available targets.
 | `API_KEY`            | *(empty)*  | Bearer token for API auth (disabled if empty)        |
 | `LOG_LEVEL`          | `info`     | Log level: `debug`, `info`, `warn`, `error`          |
 | `COPILOT_CLI_PATH`   | *(empty)*  | Path to `copilot` CLI binary (auto-detected if empty)|
+| `GITHUB_TOKEN`       | *(empty)*  | GitHub token with Copilot scope for headless auth    |
 
 ## Usage Examples
 
@@ -138,12 +141,73 @@ The Docker image includes the Copilot CLI pre-installed via npm.
 docker build -t ghcp-oai-wrapper .
 docker run -p 8080:8080 \
   -e API_KEY=my-secret \
-  -e COPILOT_GITHUB_TOKEN=ghp_... \
+  -e GITHUB_TOKEN=ghp_... \
   ghcp-oai-wrapper
 ```
 
-Authenticate by passing `COPILOT_GITHUB_TOKEN` (a GitHub PAT with Copilot scope)
-or by running the container interactively and using `/login`.
+Authenticate by passing `GITHUB_TOKEN` (a GitHub PAT with Copilot scope).
+
+## Kubernetes / Helm
+
+A Helm chart is provided in `charts/ghcp-sdk-oai-wrapper/` for production Kubernetes deployments.
+
+### Install
+
+```bash
+helm install copilot-proxy ./charts/ghcp-sdk-oai-wrapper \
+  --set secrets.githubToken=ghp_your_token_here \
+  --set secrets.apiKey=my-secret
+```
+
+### Using an existing Secret
+
+If you manage secrets externally (e.g., Sealed Secrets, External Secrets Operator):
+
+```bash
+kubectl create secret generic copilot-proxy-secret \
+  --from-literal=GITHUB_TOKEN=ghp_... \
+  --from-literal=API_KEY=my-secret
+
+helm install copilot-proxy ./charts/ghcp-sdk-oai-wrapper \
+  --set secrets.existingSecret=copilot-proxy-secret
+```
+
+### Key values
+
+| Value                              | Default     | Description                            |
+|------------------------------------|-------------|----------------------------------------|
+| `secrets.githubToken`              | `""`        | **Required.** GitHub PAT with Copilot scope |
+| `secrets.apiKey`                   | `""`        | Optional Bearer token for API auth     |
+| `secrets.existingSecret`           | `""`        | Use pre-existing K8s Secret            |
+| `config.port`                      | `"8080"`    | HTTP listen port                       |
+| `config.logLevel`                  | `"info"`    | Log level                              |
+| `metrics.enabled`                  | `true`      | Expose `/metrics` endpoint             |
+| `metrics.serviceMonitor.enabled`   | `false`     | Create Prometheus Operator ServiceMonitor |
+| `autoscaling.enabled`              | `false`     | Enable HorizontalPodAutoscaler        |
+
+## Metrics
+
+Prometheus metrics are exposed at `GET /metrics` (unauthenticated).
+
+### HTTP metrics
+
+| Metric                          | Type      | Labels                   |
+|---------------------------------|-----------|--------------------------|
+| `http_requests_total`           | Counter   | method, path, status     |
+| `http_request_duration_seconds` | Histogram | method, path             |
+| `http_requests_in_flight`       | Gauge     | —                        |
+
+### Copilot metrics
+
+| Metric                                     | Type      | Labels         |
+|---------------------------------------------|-----------|----------------|
+| `copilot_chat_completions_total`            | Counter   | model, stream, status |
+| `copilot_chat_completion_duration_seconds`  | Histogram | model, stream  |
+| `copilot_image_attachments_total`           | Counter   | —              |
+
+```bash
+curl http://localhost:8080/metrics
+```
 
 ## Architecture
 
@@ -179,10 +243,12 @@ internal/copilot/client.go   — Copilot SDK client wrapper
 internal/handler/chat.go     — POST /v1/chat/completions
 internal/handler/models.go   — GET /v1/models
 internal/handler/health.go   — GET /healthz
+internal/metrics/metrics.go  — Prometheus metrics definitions & middleware
 internal/middleware/auth.go   — Bearer-token auth middleware
 internal/oai/types.go        — OpenAI request/response types
 internal/oai/sse.go          — SSE streaming helpers
 test/e2e/e2e_test.go         — End-to-end integration tests
+charts/                      — Helm chart for Kubernetes deployment
 Makefile                     — Build, install, test, run targets
 Dockerfile                   — Multi-stage container build
 ```
