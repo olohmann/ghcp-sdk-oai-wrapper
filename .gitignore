@@ -25,3 +25,4 @@ vendor/
 # Environment
 .env
 .env.local
+PowerShellEditorServices.json

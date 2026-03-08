@@ -3,7 +3,8 @@ BUILD_DIR := bin
 INSTALL_DIR := $(HOME)/.local/bin
 MAIN_PKG := ./cmd/server
 
-LDFLAGS := -s -w
+VERSION ?= dev
+LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .PHONY: all build install uninstall test test-e2e vet lint clean run docker-build help
 
@@ -39,8 +40,8 @@ clean: ## Remove build artifacts
 run: build ## Build and run the server
 	$(BUILD_DIR)/$(BINARY_NAME)
 
-docker-build: ## Build Docker image
-	docker build -t $(BINARY_NAME) .
+docker-build: ## Build Docker image (use VERSION=x.y.z to set version)
+	docker build --build-arg VERSION=$(VERSION) -t $(BINARY_NAME):$(VERSION) .
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'

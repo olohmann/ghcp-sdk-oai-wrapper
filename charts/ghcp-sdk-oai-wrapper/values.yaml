@@ -5,7 +5,8 @@ replicaCount: 1
 image:
   repository: ghcr.io/olohmann/ghcp-sdk-oai-wrapper
   pullPolicy: IfNotPresent
-  tag: "latest"
+  # Overrides the image tag. Defaults to the chart appVersion.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""

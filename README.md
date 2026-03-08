@@ -263,6 +263,69 @@ make test
 make test-e2e
 ```
 
+## Releasing
+
+Releases are fully automated via GitHub Actions. A single git tag produces all artifacts in sync.
+
+### Release artifacts
+
+| Artifact | Location |
+|----------|----------|
+| Go binaries (linux/darwin × amd64/arm64) | GitHub Release attachments |
+| Docker image | `ghcr.io/olohmann/ghcp-sdk-oai-wrapper:<version>` |
+| Helm chart (OCI) | `oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper` |
+
+### How to release
+
+```bash
+# 1. Tag the release (triggers the workflow)
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The `release.yml` workflow will:
+1. Build cross-platform Go binaries with the version embedded
+2. Build and push a multi-arch Docker image to ghcr.io
+3. Package the Helm chart with matching version and push to ghcr.io as OCI
+4. Create a GitHub Release with binary tarballs, checksums, and auto-generated changelog
+
+### Version synchronization
+
+All artifacts share the same version derived from the git tag:
+
+- **Binary:** `ghcp-sdk-oai-wrapper --version` → `1.2.3`
+- **Docker:** `ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3`
+- **Helm chart:** `version: 1.2.3`, `appVersion: "1.2.3"`
+- **Helm default image tag:** automatically resolves to `appVersion` (= `1.2.3`)
+
+### Installing from released artifacts
+
+```bash
+# Docker
+docker pull ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3
+
+# Helm (OCI)
+helm install copilot-proxy \
+  oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper \
+  --version 1.2.3 \
+  --set secrets.githubToken=ghp_...
+```
+
+### Local versioned builds
+
+```bash
+# Build with a specific version
+VERSION=1.2.3 make build
+
+# Docker build with version
+VERSION=1.2.3 make docker-build
+```
+
+### CI
+
+The `ci.yml` workflow runs automatically on pushes to `main` and pull requests:
+build, test, lint, and Helm chart lint.
+
 ## License
 
 MIT
