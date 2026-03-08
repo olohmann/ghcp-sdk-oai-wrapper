@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 
@@ -33,7 +34,7 @@ func Auth(apiKey string) func(http.Handler) http.Handler {
 			}
 
 			token := strings.TrimPrefix(auth, "Bearer ")
-			if token == auth || token != apiKey {
+			if token == auth || subtle.ConstantTimeCompare([]byte(token), []byte(apiKey)) != 1 {
 				oai.WriteError(w, http.StatusUnauthorized,
 					"invalid API key",
 					"invalid_request_error")
