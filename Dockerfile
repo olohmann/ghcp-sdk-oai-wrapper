@@ -4,10 +4,13 @@ ARG VERSION=dev
 
 WORKDIR /app
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download && go mod verify
 
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w -X main.version=${VERSION}" -o /server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.version=${VERSION}" \
+    -trimpath \
+    -o /server ./cmd/server
 
 FROM node:22-alpine
 

@@ -8,61 +8,78 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write      # cosign keyless signing via Sigstore OIDC
+  attestations: write  # GitHub build provenance attestations
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  release:
+  # ────────────────────────────────────────────────────────
+  # Gate: run tests and lint before producing any artifacts
+  # ────────────────────────────────────────────────────────
+  validate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          fetch-depth: 0
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
-      - name: Set up Helm
-        uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+      - name: Build
+        run: make build
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Test
+        run: make test
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - name: Lint
+        run: make lint
+
+      - name: Go vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ────────────────────────────────────────────────────────
+  # Build cross-platform Go binaries
+  # ────────────────────────────────────────────────────────
+  binaries:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          go-version-file: go.mod
 
       - name: Extract version from tag
         id: version
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Releasing version: ${VERSION}"
 
-      # ── Build cross-platform Go binaries ──
       - name: Build binaries
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           LDFLAGS="-s -w -X main.version=${VERSION}"
-          BINARIES=""
-
           for GOOS in linux darwin; do
             for GOARCH in amd64 arm64; do
               OUTPUT="dist/ghcp-sdk-oai-wrapper-${GOOS}-${GOARCH}"
               echo "Building ${GOOS}/${GOARCH}..."
               CGO_ENABLED=0 GOOS=${GOOS} GOARCH=${GOARCH} \
-                go build -ldflags="${LDFLAGS}" -o "${OUTPUT}" ./cmd/server
+                go build -ldflags="${LDFLAGS}" -trimpath -o "${OUTPUT}" ./cmd/server
             done
           done
 
-      - name: Create binary tarballs and checksums
+      - name: Create tarballs and checksums
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -75,35 +92,182 @@ jobs:
           sha256sum *.tar.gz > checksums.txt
           cat checksums.txt
 
-      # ── Build and push Docker image ──
+      - name: Upload binary artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binaries
+          path: dist/
+          retention-days: 1
+
+  # ────────────────────────────────────────────────────────
+  # Build, push, scan, sign, and attest Docker image
+  # ────────────────────────────────────────────────────────
+  docker:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Multi-arch builds need QEMU for cross-platform emulation
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2 # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Generate OCI-compliant image labels and tags
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=ghcp-sdk-oai-wrapper
+            org.opencontainers.image.description=GitHub Copilot SDK to OpenAI API wrapper
+            org.opencontainers.image.vendor=olohmann
+
       - name: Build and push Docker image
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198e19c816078b # v6
         with:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          sbom: true
+          provenance: mode=max
 
-      # ── Package and push Helm chart ──
+      # ── Vulnerability scanning ──
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@915b19bbe73b92a6cf82a1bc12b087c9a19a5fe2 # v0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: table
+          exit-code: "1"
+          severity: CRITICAL
+          timeout: 10m
+
+      # ── Keyless image signing with Sigstore/cosign ──
+      - name: Install cosign
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3
+
+      - name: Sign image with cosign
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${DIGEST}"
+
+      # ── GitHub build provenance attestation ──
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@c074443f1aee8d4aeeae555aebba3282517141b2 # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+  # ────────────────────────────────────────────────────────
+  # Package and push Helm chart as OCI artifact
+  # ────────────────────────────────────────────────────────
+  helm:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a # v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to OCI registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | \
+            helm registry login "${{ env.REGISTRY }}" \
+              --username "${{ github.actor }}" \
+              --password-stdin
+
+      - name: Update Chart.yaml version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sed -i "s/^version:.*/version: ${VERSION}/" charts/ghcp-sdk-oai-wrapper/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/ghcp-sdk-oai-wrapper/Chart.yaml
+          echo "Chart.yaml:"
+          cat charts/ghcp-sdk-oai-wrapper/Chart.yaml
+
+      - name: Lint Helm chart
+        run: helm lint ./charts/ghcp-sdk-oai-wrapper/
+
       - name: Package and push Helm chart
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          # Update Chart.yaml with release version
-          sed -i "s/^version:.*/version: ${VERSION}/" charts/ghcp-sdk-oai-wrapper/Chart.yaml
-          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/ghcp-sdk-oai-wrapper/Chart.yaml
-
-          echo "Chart.yaml after version update:"
-          cat charts/ghcp-sdk-oai-wrapper/Chart.yaml
-
           helm package charts/ghcp-sdk-oai-wrapper/ --destination dist/
-          helm push dist/ghcp-sdk-oai-wrapper-${VERSION}.tgz oci://${{ env.REGISTRY }}/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/charts
+          helm push dist/ghcp-sdk-oai-wrapper-${VERSION}.tgz \
+            oci://${{ env.REGISTRY }}/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/charts
 
-      # ── Create GitHub Release ──
+      - name: Upload Helm chart artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: helm-chart
+          path: dist/*.tgz
+          retention-days: 1
+
+  # ────────────────────────────────────────────────────────
+  # Create GitHub Release with all artifacts
+  # ────────────────────────────────────────────────────────
+  github-release:
+    needs: [binaries, docker, helm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download binary artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: binaries
+          path: dist/
+
+      - name: Download Helm chart artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: helm-chart
+          path: dist/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2
         with:
@@ -111,3 +275,37 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/checksums.txt
+            dist/*.tgz
+          body: |
+            ## Docker Image
+
+            ```bash
+            docker pull ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.docker.outputs.version }}
+            ```
+
+            **Image digest:** `${{ needs.docker.outputs.digest }}`
+
+            ### Verify image signature
+
+            ```bash
+            cosign verify \
+              --certificate-identity-regexp "https://github.com/${{ github.repository }}/" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker.outputs.digest }}
+            ```
+
+            ### Verify build provenance
+
+            ```bash
+            gh attestation verify \
+              oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.docker.outputs.digest }} \
+              --owner ${{ github.repository_owner }}
+            ```
+
+            ## Helm Chart (OCI)
+
+            ```bash
+            helm install copilot-proxy \
+              oci://${{ env.REGISTRY }}/$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')/charts/ghcp-sdk-oai-wrapper \
+              --version ${{ needs.docker.outputs.version }}
+            ```
