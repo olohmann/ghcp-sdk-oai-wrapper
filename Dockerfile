@@ -16,12 +16,11 @@ FROM node:22-alpine
 
 RUN apk add --no-cache ca-certificates git \
     && npm install -g @github/copilot \
-    && npm cache clean --force \
-    && addgroup -g 1000 appuser \
-    && adduser -D -u 1000 -G appuser appuser
+    && npm cache clean --force
 
-COPY --from=builder --chown=appuser:appuser /server /server
+# Reuse the existing node user (uid/gid 1000) from the base image
+COPY --from=builder --chown=node:node /server /server
 
-USER appuser
+USER node
 EXPOSE 8080
 ENTRYPOINT ["/server"]
