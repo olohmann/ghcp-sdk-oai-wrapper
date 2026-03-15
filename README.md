@@ -1,5 +1,10 @@
 # GitHub Copilot SDK → OpenAI API Wrapper
 
+[![CI](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/ci.yml/badge.svg)](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/ci.yml)
+[![Release](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/release.yml/badge.svg)](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/release.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/olohmann/ghcp-sdk-oai-wrapper)](https://goreportcard.com/report/github.com/olohmann/ghcp-sdk-oai-wrapper)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 An HTTP server written in Go that exposes an **OpenAI-compatible API** and delegates
 all inference to the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
 
@@ -263,40 +268,96 @@ make test
 make test-e2e
 ```
 
-## Releasing
+## CI/CD
 
-Releases are fully automated via GitHub Actions. A single git tag produces all artifacts in sync.
+### Continuous Integration (`ci.yml`)
 
-### Release artifacts
+The CI workflow runs automatically on pushes to `main` and on pull requests:
 
-| Artifact | Location |
-|----------|----------|
-| Go binaries (linux/darwin × amd64/arm64) | GitHub Release attachments |
-| Docker image | `ghcr.io/olohmann/ghcp-sdk-oai-wrapper:<version>` |
-| Helm chart (OCI) | `oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper` |
+| Job | What it does |
+|-----|-------------|
+| **build-and-test** | Build, unit tests, `go vet` lint, `govulncheck` vulnerability scan |
+| **helm-lint** | Lint the Helm chart |
+| **docker-build** | Build the Docker image (no push), scan with [Trivy](https://trivy.dev/), upload SARIF results to GitHub Security |
 
-### How to release
+All checks must pass before a pull request can be merged.
+
+### Releasing (`release.yml`)
+
+Releases are fully automated. A single git tag produces **all artifacts with the same semantic version**.
+
+#### How to release
 
 ```bash
-# 1. Tag the release (triggers the workflow)
 git tag v1.2.3
 git push origin v1.2.3
 ```
 
-The `release.yml` workflow will:
-1. Build cross-platform Go binaries with the version embedded
-2. Build and push a multi-arch Docker image to ghcr.io
-3. Package the Helm chart with matching version and push to ghcr.io as OCI
-4. Create a GitHub Release with binary tarballs, checksums, and auto-generated changelog
+#### Release pipeline
 
-### Version synchronization
+The workflow runs five jobs after the tag push:
 
-All artifacts share the same version derived from the git tag:
+```
+validate ─┬─► binaries ──┐
+           ├─► docker ────┼─► github-release
+           └─► helm ──────┘
+```
+
+| Job | Description |
+|-----|-------------|
+| **validate** | Build, test, lint, `govulncheck` — gates all downstream jobs |
+| **binaries** | Cross-compile Go binaries (linux/darwin × amd64/arm64), create tarballs and SHA-256 checksums |
+| **docker** | Build multi-arch image, push to ghcr.io, generate SBOM, scan with Trivy, sign with cosign, attest provenance |
+| **helm** | Update `Chart.yaml` version, lint, package, push OCI chart to ghcr.io |
+| **github-release** | Create GitHub Release with binaries, checksums, Helm chart, and verification instructions |
+
+#### Release artifacts
+
+| Artifact | Location |
+|----------|----------|
+| Go binaries (linux/darwin × amd64/arm64) | GitHub Release attachments |
+| Docker image (multi-arch) | `ghcr.io/olohmann/ghcp-sdk-oai-wrapper:<version>` |
+| Helm chart (OCI) | `oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper` |
+
+#### Version synchronization
+
+All artifacts share the same semantic version derived from the git tag:
 
 - **Binary:** `ghcp-sdk-oai-wrapper --version` → `1.2.3`
-- **Docker:** `ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3`
+- **Docker tags:** `1.2.3`, `1.2`, `1`, `sha-<commit>`
 - **Helm chart:** `version: 1.2.3`, `appVersion: "1.2.3"`
-- **Helm default image tag:** automatically resolves to `appVersion` (= `1.2.3`)
+- **Helm default image tag:** resolves to `appVersion` (= `1.2.3`)
+
+### Supply chain security
+
+Every release image is secured with multiple layers of verification:
+
+| Feature | Tool | Purpose |
+|---------|------|---------|
+| **Image signing** | [cosign](https://docs.sigstore.dev/cosign/) (keyless/Sigstore OIDC) | Proves the image was built by this repository's GitHub Actions workflow |
+| **Build provenance** | [GitHub Attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) (SLSA) | Cryptographic proof of build inputs, environment, and steps |
+| **SBOM** | Docker BuildKit built-in | Software Bill of Materials attached to the image manifest |
+| **Vulnerability scan** | [Trivy](https://trivy.dev/) | Blocks releases with CRITICAL vulnerabilities |
+| **OCI labels** | [docker/metadata-action](https://github.com/docker/metadata-action) | Standardized OCI annotations (source, revision, vendor, etc.) |
+| **Go vuln check** | [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | Checks Go dependencies against the Go vulnerability database |
+| **Reproducible builds** | `-trimpath` flag | Strips local paths from binaries for reproducibility |
+
+#### Verify an image signature
+
+```bash
+cosign verify \
+  --certificate-identity-regexp "https://github.com/olohmann/ghcp-sdk-oai-wrapper/" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3
+```
+
+#### Verify build provenance
+
+```bash
+gh attestation verify \
+  oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3 \
+  --owner olohmann
+```
 
 ### Installing from released artifacts
 
@@ -321,11 +382,6 @@ VERSION=1.2.3 make build
 VERSION=1.2.3 make docker-build
 ```
 
-### CI
-
-The `ci.yml` workflow runs automatically on pushes to `main` and pull requests:
-build, test, lint, and Helm chart lint.
-
 ## License
 
-MIT
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
