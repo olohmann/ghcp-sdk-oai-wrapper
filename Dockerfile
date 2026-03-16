@@ -14,9 +14,11 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM node:22-alpine
 
-RUN apk add --no-cache ca-certificates git \
+RUN apk update && apk upgrade --no-cache \
+    && apk add --no-cache ca-certificates git \
     && npm install -g @github/copilot \
-    && npm cache clean --force
+    && npm cache clean --force \
+    && rm -rf /var/cache/apk/*
 
 # Reuse the existing node user (uid/gid 1000) from the base image
 COPY --from=builder --chown=node:node /server /server
