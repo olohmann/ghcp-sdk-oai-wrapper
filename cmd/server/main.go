@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/handler"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/middleware"
+	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/ollama"
 )
 
 // version is set at build time via ldflags:
@@ -25,12 +27,20 @@ import (
 var version = "dev"
 
 func main() {
+	// Handle --version before flag parsing (exits immediately).
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println(version)
 		os.Exit(0)
 	}
 
+	// Parse CLI flags.
+	var flagPort, flagMode string
+	flag.StringVar(&flagPort, "port", "", "HTTP listen port (overrides PORT env var)")
+	flag.StringVar(&flagMode, "mode", "", "API mode: openai or ollama (overrides MODE env var)")
+	flag.Parse()
+
 	cfg := config.Load()
+	cfg.ApplyFlags(flagPort, flagMode)
 
 	logLevel := slog.LevelInfo
 	switch cfg.LogLevel {
@@ -52,15 +62,29 @@ func main() {
 	}
 	defer client.Stop()
 
-	// Build router
+	// Build router with mode-based route registration
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", handler.Health())
-	mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions(client, logger))
-	mux.HandleFunc("/v1/models", handler.Models(client, logger))
 	mux.Handle("/metrics", promhttp.Handler())
 
-	// Apply middleware: metrics first (all requests), then auth (skips /healthz and /metrics)
-	authMiddleware := middleware.Auth(cfg.APIKey)
+	var authExempt []string
+	switch cfg.Mode {
+	case "ollama":
+		mux.HandleFunc("/", ollama.Root(version))
+		mux.HandleFunc("/api/chat", ollama.Chat(client, logger))
+		mux.HandleFunc("/api/generate", ollama.Generate(client, logger))
+		mux.HandleFunc("/api/tags", ollama.Tags(client, logger))
+		mux.HandleFunc("/api/show", ollama.Show(client, logger))
+		mux.HandleFunc("/api/version", ollama.Version(version))
+		authExempt = []string{"/", "/api/version", "/metrics"}
+	default: // "openai"
+		mux.HandleFunc("/healthz", handler.Health())
+		mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions(client, logger))
+		mux.HandleFunc("/v1/models", handler.Models(client, logger))
+		authExempt = []string{"/healthz", "/metrics"}
+	}
+
+	// Apply middleware: metrics first (all requests), then auth (skips exempt paths)
+	authMiddleware := middleware.Auth(cfg.APIKey, authExempt...)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      metrics.Middleware(authMiddleware(mux)),
@@ -71,7 +95,7 @@ func main() {
 
 	// Start server
 	go func() {
-		logger.Info("server starting", "port", cfg.Port, "auth_enabled", cfg.APIKey != "")
+		logger.Info("server starting", "port", cfg.Port, "mode", cfg.Mode, "auth_enabled", cfg.APIKey != "")
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server error", "error", err)
 			os.Exit(1)

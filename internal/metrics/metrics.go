@@ -115,13 +115,16 @@ func (rw *responseWriter) Flush() {
 
 // normalizePath maps request paths to label-safe metric paths.
 func normalizePath(path string) string {
-	switch {
-	case path == "/healthz":
-		return "/healthz"
-	case path == "/v1/models":
-		return "/v1/models"
-	case path == "/v1/chat/completions":
-		return "/v1/chat/completions"
+	switch path {
+	case "/healthz",
+		"/v1/models",
+		"/v1/chat/completions",
+		"/api/chat",
+		"/api/generate",
+		"/api/tags",
+		"/api/show",
+		"/api/version":
+		return path
 	default:
 		return "/other"
 	}

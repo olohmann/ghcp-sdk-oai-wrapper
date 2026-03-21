@@ -311,23 +311,8 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 }
 
 func createSession(ctx context.Context, client *wrapper.Client, req *oai.ChatCompletionRequest, streaming bool) (*copilot.Session, error) {
-	cfg := &copilot.SessionConfig{
-		Model:               req.Model,
-		Streaming:           streaming,
-		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
-		InfiniteSessions:    &copilot.InfiniteSessionConfig{Enabled: copilot.Bool(false)},
-		AvailableTools:      []string{},
-	}
-
 	sysMsg := extractSystemMessage(req.Messages)
-	if sysMsg != "" {
-		cfg.SystemMessage = &copilot.SystemMessageConfig{
-			Mode:    "replace",
-			Content: sysMsg,
-		}
-	}
-
-	return client.CreateSession(ctx, cfg)
+	return client.NewChatSession(ctx, req.Model, sysMsg, streaming)
 }
 
 // mimeToExt maps common image MIME types to file extensions.
