@@ -14,8 +14,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 
 FROM node:22-alpine
 
+# Bust layer cache when Alpine publishes security fixes
+ARG APK_CACHE_BUST=2026-03-21
 RUN apk update && apk upgrade --no-cache \
-    && apk add --no-cache ca-certificates git \
+    && apk add --no-cache ca-certificates git libexpat \
     && npm install -g @github/copilot \
     && npm cache clean --force \
     && rm -rf /var/cache/apk/*
