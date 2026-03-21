@@ -18,6 +18,8 @@ type Config struct {
 	CopilotCLIPath string
 	// GitHubToken is a GitHub token with Copilot scope for headless authentication.
 	GitHubToken string
+	// Mode selects the API surface: "openai" or "ollama".
+	Mode string
 }
 
 // Load reads configuration from environment variables.
@@ -28,6 +30,17 @@ func Load() *Config {
 		LogLevel:       strings.ToLower(envOrDefault("LOG_LEVEL", "info")),
 		CopilotCLIPath: os.Getenv("COPILOT_CLI_PATH"),
 		GitHubToken:    os.Getenv("GITHUB_TOKEN"),
+		Mode:           strings.ToLower(envOrDefault("MODE", "openai")),
+	}
+}
+
+// ApplyFlags overrides configuration with CLI flag values (if non-empty).
+func (c *Config) ApplyFlags(flagPort, flagMode string) {
+	if flagPort != "" {
+		c.Port = flagPort
+	}
+	if flagMode != "" {
+		c.Mode = strings.ToLower(flagMode)
 	}
 }
 

@@ -61,3 +61,23 @@ func (c *Client) ListModels(ctx context.Context) ([]copilot.ModelInfo, error) {
 func (c *Client) CreateSession(ctx context.Context, cfg *copilot.SessionConfig) (*copilot.Session, error) {
 	return c.inner.CreateSession(ctx, cfg)
 }
+
+// NewChatSession creates a new Copilot chat session with common defaults.
+// This is a convenience method that both OpenAI and Ollama handlers can use
+// without depending on each other's types.
+func (c *Client) NewChatSession(ctx context.Context, model, systemMessage string, streaming bool) (*copilot.Session, error) {
+	cfg := &copilot.SessionConfig{
+		Model:               model,
+		Streaming:           streaming,
+		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
+		InfiniteSessions:    &copilot.InfiniteSessionConfig{Enabled: copilot.Bool(false)},
+		AvailableTools:      []string{},
+	}
+	if systemMessage != "" {
+		cfg.SystemMessage = &copilot.SystemMessageConfig{
+			Mode:    "replace",
+			Content: systemMessage,
+		}
+	}
+	return c.inner.CreateSession(ctx, cfg)
+}
