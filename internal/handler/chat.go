@@ -47,10 +47,16 @@ func ChatCompletions(client *wrapper.Client, logger *slog.Logger) http.HandlerFu
 			return
 		}
 
+		// Enrich logger with client identity for debugging disconnects
+		reqLogger := logger.With(
+			"remote_addr", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+
 		if req.Stream {
-			handleStreaming(r.Context(), w, client, &req, logger)
+			handleStreaming(r.Context(), w, client, &req, reqLogger)
 		} else {
-			handleNonStreaming(r.Context(), w, client, &req, logger)
+			handleNonStreaming(r.Context(), w, client, &req, reqLogger)
 		}
 	}
 }
@@ -215,9 +221,10 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	done := make(chan struct{})
 	var once sync.Once
 	var gotDelta atomic.Bool
+	var writeErrors atomic.Int64
 
 	// Send the initial chunk with role
-	_ = sse.WriteEvent(oai.ChatCompletionChunk{
+	if err := sse.WriteEvent(oai.ChatCompletionChunk{
 		ID:      completionID,
 		Object:  "chat.completion.chunk",
 		Created: created,
@@ -225,17 +232,20 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 		Choices: []oai.Choice{
 			{
 				Index: 0,
-				Delta: &oai.Message{Role: "assistant"},
+				Delta: &oai.DeltaMessage{Role: "assistant"},
 			},
 		},
-	})
+	}); err != nil {
+		writeErrors.Add(1)
+		logger.Debug("SSE write error (initial chunk)", "error", err)
+	}
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
 		switch event.Type {
 		case copilot.AssistantMessageDelta:
 			gotDelta.Store(true)
 			if event.Data.DeltaContent != nil {
-				_ = sse.WriteEvent(oai.ChatCompletionChunk{
+				if err := sse.WriteEvent(oai.ChatCompletionChunk{
 					ID:      completionID,
 					Object:  "chat.completion.chunk",
 					Created: created,
@@ -243,16 +253,19 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 					Choices: []oai.Choice{
 						{
 							Index: 0,
-							Delta: &oai.Message{Content: oai.NewTextContent(*event.Data.DeltaContent)},
+							Delta: &oai.DeltaMessage{Content: event.Data.DeltaContent},
 						},
 					},
-				})
+				}); err != nil {
+					writeErrors.Add(1)
+					logger.Debug("SSE write error (delta)", "error", err)
+				}
 			}
 
 		case copilot.AssistantMessage:
 			// Only send the full message if we never received deltas (fallback)
 			if !gotDelta.Load() && event.Data.Content != nil {
-				_ = sse.WriteEvent(oai.ChatCompletionChunk{
+				if err := sse.WriteEvent(oai.ChatCompletionChunk{
 					ID:      completionID,
 					Object:  "chat.completion.chunk",
 					Created: created,
@@ -260,10 +273,13 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 					Choices: []oai.Choice{
 						{
 							Index: 0,
-							Delta: &oai.Message{Content: oai.NewTextContent(*event.Data.Content)},
+							Delta: &oai.DeltaMessage{Content: event.Data.Content},
 						},
 					},
-				})
+				}); err != nil {
+					writeErrors.Add(1)
+					logger.Debug("SSE write error (message)", "error", err)
+				}
 			}
 
 		case copilot.SessionIdle:
@@ -277,7 +293,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 				Choices: []oai.Choice{
 					{
 						Index:        0,
-						Delta:        &oai.Message{},
+						Delta:        &oai.DeltaMessage{},
 						FinishReason: oai.StringPtr("stop"),
 					},
 				},
@@ -304,9 +320,18 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	select {
 	case <-done:
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during streaming")
+		logger.Warn("request context cancelled during streaming",
+			"cause", ctx.Err(),
+			"elapsed", time.Since(start).String(),
+			"got_delta", gotDelta.Load(),
+			"write_errors", writeErrors.Load(),
+		)
 	case <-time.After(5 * time.Minute):
-		logger.Warn("streaming timeout reached")
+		logger.Warn("streaming timeout reached",
+			"elapsed", time.Since(start).String(),
+			"got_delta", gotDelta.Load(),
+			"write_errors", writeErrors.Load(),
+		)
 	}
 }
 

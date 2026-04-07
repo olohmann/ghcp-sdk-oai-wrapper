@@ -39,10 +39,16 @@ func Generate(client *wrapper.Client, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 
+		// Enrich logger with client identity for debugging disconnects
+		reqLogger := logger.With(
+			"remote_addr", r.RemoteAddr,
+			"user_agent", r.UserAgent(),
+		)
+
 		if req.IsStreaming() {
-			handleGenerateStreaming(r.Context(), w, client, &req, logger)
+			handleGenerateStreaming(r.Context(), w, client, &req, reqLogger)
 		} else {
-			handleGenerateNonStreaming(r.Context(), w, client, &req, logger)
+			handleGenerateNonStreaming(r.Context(), w, client, &req, reqLogger)
 		}
 	}
 }
@@ -120,28 +126,35 @@ func handleGenerateStreaming(ctx context.Context, w http.ResponseWriter, client 
 	done := make(chan struct{})
 	var once sync.Once
 	var gotDelta atomic.Bool
+	var writeErrors atomic.Int64
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
 		switch event.Type {
 		case copilot.AssistantMessageDelta:
 			gotDelta.Store(true)
 			if event.Data.DeltaContent != nil {
-				_ = ndjson.WriteLine(GenerateStreamChunk{
+				if err := ndjson.WriteLine(GenerateStreamChunk{
 					Model:     req.Model,
 					CreatedAt: NowRFC3339Milli(),
 					Response:  *event.Data.DeltaContent,
 					Done:      false,
-				})
+				}); err != nil {
+					writeErrors.Add(1)
+					logger.Debug("NDJSON write error (delta)", "error", err)
+				}
 			}
 
 		case copilot.AssistantMessage:
 			if !gotDelta.Load() && event.Data.Content != nil {
-				_ = ndjson.WriteLine(GenerateStreamChunk{
+				if err := ndjson.WriteLine(GenerateStreamChunk{
 					Model:     req.Model,
 					CreatedAt: NowRFC3339Milli(),
 					Response:  *event.Data.Content,
 					Done:      false,
-				})
+				}); err != nil {
+					writeErrors.Add(1)
+					logger.Debug("NDJSON write error (message)", "error", err)
+				}
 			}
 
 		case copilot.SessionIdle:
@@ -173,8 +186,17 @@ func handleGenerateStreaming(ctx context.Context, w http.ResponseWriter, client 
 	select {
 	case <-done:
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during streaming")
+		logger.Warn("request context cancelled during streaming",
+			"cause", ctx.Err(),
+			"elapsed", time.Since(start).String(),
+			"got_delta", gotDelta.Load(),
+			"write_errors", writeErrors.Load(),
+		)
 	case <-time.After(5 * time.Minute):
-		logger.Warn("streaming timeout reached")
+		logger.Warn("streaming timeout reached",
+			"elapsed", time.Since(start).String(),
+			"got_delta", gotDelta.Load(),
+			"write_errors", writeErrors.Load(),
+		)
 	}
 }
