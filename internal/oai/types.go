@@ -115,6 +115,13 @@ type Message struct {
 	Name    string         `json:"name,omitempty"`
 }
 
+// DeltaMessage represents a streaming delta with correct omitempty semantics.
+// Unlike Message, fields are omitted when not set (matching the OpenAI SSE format).
+type DeltaMessage struct {
+	Role    string  `json:"role,omitempty"`
+	Content *string `json:"content,omitempty"`
+}
+
 // ChatCompletionResponse represents the OpenAI non-streaming response.
 type ChatCompletionResponse struct {
 	ID                string   `json:"id"`
@@ -128,10 +135,10 @@ type ChatCompletionResponse struct {
 
 // Choice represents a single completion choice.
 type Choice struct {
-	Index        int      `json:"index"`
-	Message      *Message `json:"message,omitempty"`
-	Delta        *Message `json:"delta,omitempty"`
-	FinishReason *string  `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      *Message      `json:"message,omitempty"`
+	Delta        *DeltaMessage `json:"delta,omitempty"`
+	FinishReason *string       `json:"finish_reason"`
 }
 
 // Usage tracks token usage.
