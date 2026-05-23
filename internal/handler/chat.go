@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -117,14 +116,13 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 		"preview", truncate(req.Messages[len(req.Messages)-1].Content.TextContent(), 80),
 	)
 
-	attachments, cleanup, err := extractImageAttachments(req.Messages, logger)
+	attachments, err := extractAttachments(req.Messages, logger)
 	if err != nil {
-		logger.Error("failed to extract image attachments", "error", err)
+		logger.Error("failed to extract attachments", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusBadRequest, "failed to process image attachments: "+err.Error(), "invalid_request_error")
+		oai.WriteError(w, http.StatusBadRequest, "failed to process attachments: "+err.Error(), "invalid_request_error")
 		return
 	}
-	defer cleanup()
 	metrics.RecordImageAttachments(len(attachments))
 
 	session, err := createSession(ctx, client, req, false)
@@ -134,7 +132,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 		oai.WriteError(w, http.StatusInternalServerError, "failed to create session", "server_error")
 		return
 	}
-	defer session.Destroy()
+	defer session.Disconnect()
 
 	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -151,8 +149,10 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	}
 
 	content := ""
-	if reply != nil && reply.Data.Content != nil {
-		content = *reply.Data.Content
+	if reply != nil {
+		if d, ok := reply.Data.(*copilot.AssistantMessageData); ok {
+			content = d.Content
+		}
 	}
 
 	completionID := oai.NewCompletionID()
@@ -186,14 +186,13 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 		"preview", truncate(req.Messages[len(req.Messages)-1].Content.TextContent(), 80),
 	)
 
-	attachments, cleanup, err := extractImageAttachments(req.Messages, logger)
+	attachments, err := extractAttachments(req.Messages, logger)
 	if err != nil {
-		logger.Error("failed to extract image attachments", "error", err)
+		logger.Error("failed to extract attachments", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		oai.WriteError(w, http.StatusBadRequest, "failed to process image attachments: "+err.Error(), "invalid_request_error")
+		oai.WriteError(w, http.StatusBadRequest, "failed to process attachments: "+err.Error(), "invalid_request_error")
 		return
 	}
-	defer cleanup()
 	metrics.RecordImageAttachments(len(attachments))
 
 	sse, err := oai.NewSSEWriter(w)
@@ -213,7 +212,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 		_ = sse.WriteDone()
 		return
 	}
-	defer session.Destroy()
+	defer session.Disconnect()
 
 	completionID := oai.NewCompletionID()
 	created := oai.NowUnix()
@@ -241,10 +240,11 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	}
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
-		switch event.Type {
-		case copilot.AssistantMessageDelta:
+		switch d := event.Data.(type) {
+		case *copilot.AssistantMessageDeltaData:
 			gotDelta.Store(true)
-			if event.Data.DeltaContent != nil {
+			if d.DeltaContent != "" {
+				delta := d.DeltaContent
 				if err := sse.WriteEvent(oai.ChatCompletionChunk{
 					ID:      completionID,
 					Object:  "chat.completion.chunk",
@@ -253,7 +253,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 					Choices: []oai.Choice{
 						{
 							Index: 0,
-							Delta: &oai.DeltaMessage{Content: event.Data.DeltaContent},
+							Delta: &oai.DeltaMessage{Content: &delta},
 						},
 					},
 				}); err != nil {
@@ -262,9 +262,10 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 				}
 			}
 
-		case copilot.AssistantMessage:
+		case *copilot.AssistantMessageData:
 			// Only send the full message if we never received deltas (fallback)
-			if !gotDelta.Load() && event.Data.Content != nil {
+			if !gotDelta.Load() && d.Content != "" {
+				content := d.Content
 				if err := sse.WriteEvent(oai.ChatCompletionChunk{
 					ID:      completionID,
 					Object:  "chat.completion.chunk",
@@ -273,7 +274,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 					Choices: []oai.Choice{
 						{
 							Index: 0,
-							Delta: &oai.DeltaMessage{Content: event.Data.Content},
+							Delta: &oai.DeltaMessage{Content: &content},
 						},
 					},
 				}); err != nil {
@@ -282,7 +283,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 				}
 			}
 
-		case copilot.SessionIdle:
+		case *copilot.SessionIdleData:
 			metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
 			// Send the final chunk with finish_reason
 			_ = sse.WriteEvent(oai.ChatCompletionChunk{
@@ -340,17 +341,87 @@ func createSession(ctx context.Context, client *wrapper.Client, req *oai.ChatCom
 	return client.NewChatSession(ctx, req.Model, sysMsg, streaming)
 }
 
-// mimeToExt maps common image MIME types to file extensions.
-var mimeToExt = map[string]string{
-	"image/png":  ".png",
-	"image/jpeg": ".jpg",
-	"image/gif":  ".gif",
-	"image/webp": ".webp",
-	"image/bmp":  ".bmp",
-	"image/tiff": ".tiff",
-	"image/x-icon": ".ico",
-	"image/heic": ".heic",
-	"image/avif": ".avif",
+// extractAttachments scans all messages for `image_url` and `file` content
+// parts with inline data URIs and returns Copilot SDK blob attachments —
+// the SDK accepts base64 bytes plus a MIME type directly via
+// UserMessageAttachmentBlob, with no need to materialize files on disk.
+//
+// `image_url` parts only accept image/* MIME types — PDFs and other documents
+// must be sent as `file` parts (matching the official OpenAI API). `file`
+// parts accept any MIME the model can ingest. `file.file_id` references are
+// not proxied and return an error.
+func extractAttachments(messages []oai.Message, logger *slog.Logger) ([]copilot.Attachment, error) {
+	var attachments []copilot.Attachment
+
+	for _, msg := range messages {
+		// image_url parts: images only.
+		for _, img := range msg.Content.ImageParts() {
+			url := img.ImageURL.URL
+
+			if !strings.HasPrefix(url, "data:") {
+				logger.Warn("skipping non-data image URL (not supported)", "url", truncate(url, 60))
+				continue
+			}
+
+			mimeType, data, err := parseDataURI(url)
+			if err != nil {
+				return nil, fmt.Errorf("invalid image_url data URI: %w", err)
+			}
+			if !strings.HasPrefix(mimeType, "image/") {
+				return nil, fmt.Errorf("image_url parts must use an image/* MIME type (got %q); use a `file` content part for documents like PDFs", mimeType)
+			}
+
+			attachments = append(attachments, &copilot.UserMessageAttachmentBlob{
+				Data:     base64.StdEncoding.EncodeToString(data),
+				MIMEType: mimeType,
+			})
+			logger.Info("extracted attachment",
+				"kind", "image",
+				"mime", mimeType,
+				"size", len(data),
+			)
+		}
+
+		// file parts: any MIME, caller-supplied filename preferred.
+		for _, fp := range msg.Content.FileParts() {
+			file := fp.File
+			if file.FileID != "" {
+				return nil, fmt.Errorf("file.file_id is not supported by this server; embed the file inline via file.file_data as a `data:<mime>;base64,...` URI")
+			}
+			if file.FileData == "" {
+				return nil, fmt.Errorf("file part requires file.file_data (a `data:<mime>;base64,...` URI)")
+			}
+			if !strings.HasPrefix(file.FileData, "data:") {
+				return nil, fmt.Errorf("file.file_data must be a `data:<mime>;base64,...` URI")
+			}
+
+			mimeType, data, err := parseDataURI(file.FileData)
+			if err != nil {
+				return nil, fmt.Errorf("invalid file.file_data URI: %w", err)
+			}
+			if mimeType == "" {
+				return nil, fmt.Errorf("file.file_data data URI is missing its MIME type")
+			}
+
+			blob := &copilot.UserMessageAttachmentBlob{
+				Data:     base64.StdEncoding.EncodeToString(data),
+				MIMEType: mimeType,
+			}
+			if file.Filename != "" {
+				dn := filepath.Base(file.Filename)
+				blob.DisplayName = &dn
+			}
+			attachments = append(attachments, blob)
+			logger.Info("extracted attachment",
+				"kind", "file",
+				"mime", mimeType,
+				"size", len(data),
+				"filename", file.Filename,
+			)
+		}
+	}
+
+	return attachments, nil
 }
 
 // parseDataURI parses a data URI (data:<mediatype>;base64,<data>) and returns
@@ -384,70 +455,3 @@ func parseDataURI(uri string) (mimeType string, data []byte, err error) {
 	return mimeType, data, nil
 }
 
-// extractImageAttachments scans all messages for image_url content parts with
-// data URIs, writes them to temp files, and returns Copilot SDK file attachments.
-// The returned cleanup function removes all temp files and must be deferred.
-func extractImageAttachments(messages []oai.Message, logger *slog.Logger) ([]copilot.Attachment, func(), error) {
-	var attachments []copilot.Attachment
-	var tmpFiles []string
-
-	cleanup := func() {
-		for _, f := range tmpFiles {
-			if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
-				logger.Warn("failed to remove temp image file", "path", f, "error", err)
-			}
-		}
-	}
-
-	for _, msg := range messages {
-		for _, img := range msg.Content.ImageParts() {
-			url := img.ImageURL.URL
-
-			if !strings.HasPrefix(url, "data:") {
-				// Non-data URIs (e.g., https://) are not supported by the SDK file workaround.
-				logger.Warn("skipping non-data image URL (not supported)", "url", truncate(url, 60))
-				continue
-			}
-
-			mimeType, data, err := parseDataURI(url)
-			if err != nil {
-				cleanup()
-				return nil, func() {}, fmt.Errorf("invalid image data URI: %w", err)
-			}
-
-			ext := mimeToExt[mimeType]
-			if ext == "" {
-				ext = ".bin"
-			}
-
-			tmpFile, err := os.CreateTemp("", "copilot-img-*"+ext)
-			if err != nil {
-				cleanup()
-				return nil, func() {}, fmt.Errorf("failed to create temp file: %w", err)
-			}
-
-			if _, err := tmpFile.Write(data); err != nil {
-				tmpFile.Close()
-				cleanup()
-				return nil, func() {}, fmt.Errorf("failed to write temp file: %w", err)
-			}
-			tmpFile.Close()
-
-			absPath, _ := filepath.Abs(tmpFile.Name())
-			tmpFiles = append(tmpFiles, absPath)
-
-			attachments = append(attachments, copilot.Attachment{
-				Type: copilot.File,
-				Path: &absPath,
-			})
-
-			logger.Info("extracted image attachment",
-				"mime", mimeType,
-				"size", len(data),
-				"path", absPath,
-			)
-		}
-	}
-
-	return attachments, cleanup, nil
-}

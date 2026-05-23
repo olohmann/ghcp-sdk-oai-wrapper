@@ -22,7 +22,7 @@ func NewClient(cliPath string, githubToken string, logger *slog.Logger) *Client 
 		LogLevel: "error",
 	}
 	if cliPath != "" {
-		opts.CLIPath = cliPath
+		opts.Connection = copilot.StdioConnection{Path: cliPath}
 	}
 	if githubToken != "" {
 		opts.GitHubToken = githubToken
@@ -68,7 +68,7 @@ func (c *Client) CreateSession(ctx context.Context, cfg *copilot.SessionConfig) 
 func (c *Client) NewChatSession(ctx context.Context, model, systemMessage string, streaming bool) (*copilot.Session, error) {
 	cfg := &copilot.SessionConfig{
 		Model:               model,
-		Streaming:           streaming,
+		Streaming:           copilot.Bool(streaming),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		InfiniteSessions:    &copilot.InfiniteSessionConfig{Enabled: copilot.Bool(false)},
 		AvailableTools:      []string{},

@@ -89,8 +89,10 @@ func handleChatNonStreaming(ctx context.Context, w http.ResponseWriter, client *
 	}
 
 	content := ""
-	if reply != nil && reply.Data.Content != nil {
-		content = *reply.Data.Content
+	if reply != nil {
+		if d, ok := reply.Data.(*copilot.AssistantMessageData); ok {
+			content = d.Content
+		}
 	}
 
 	duration := time.Since(start)
@@ -137,14 +139,14 @@ func handleChatStreaming(ctx context.Context, w http.ResponseWriter, client *wra
 	var writeErrors atomic.Int64
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
-		switch event.Type {
-		case copilot.AssistantMessageDelta:
+		switch d := event.Data.(type) {
+		case *copilot.AssistantMessageDeltaData:
 			gotDelta.Store(true)
-			if event.Data.DeltaContent != nil {
+			if d.DeltaContent != "" {
 				if err := ndjson.WriteLine(ChatStreamChunk{
 					Model:     req.Model,
 					CreatedAt: NowRFC3339Milli(),
-					Message:   Message{Role: "assistant", Content: *event.Data.DeltaContent},
+					Message:   Message{Role: "assistant", Content: d.DeltaContent},
 					Done:      false,
 				}); err != nil {
 					writeErrors.Add(1)
@@ -152,12 +154,12 @@ func handleChatStreaming(ctx context.Context, w http.ResponseWriter, client *wra
 				}
 			}
 
-		case copilot.AssistantMessage:
-			if !gotDelta.Load() && event.Data.Content != nil {
+		case *copilot.AssistantMessageData:
+			if !gotDelta.Load() && d.Content != "" {
 				if err := ndjson.WriteLine(ChatStreamChunk{
 					Model:     req.Model,
 					CreatedAt: NowRFC3339Milli(),
-					Message:   Message{Role: "assistant", Content: *event.Data.Content},
+					Message:   Message{Role: "assistant", Content: d.Content},
 					Done:      false,
 				}); err != nil {
 					writeErrors.Add(1)
@@ -165,7 +167,7 @@ func handleChatStreaming(ctx context.Context, w http.ResponseWriter, client *wra
 				}
 			}
 
-		case copilot.SessionIdle:
+		case *copilot.SessionIdleData:
 			duration := time.Since(start)
 			metrics.RecordCompletion(req.Model, true, "success", duration)
 			_ = ndjson.WriteLine(ChatStreamChunk{

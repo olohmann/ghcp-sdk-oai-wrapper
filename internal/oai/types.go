@@ -33,11 +33,29 @@ type ImageURL struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// FilePart represents a file attachment in a content part, matching the
+// official OpenAI Chat Completions `file` content part schema as exposed by
+// `openai/openai-go` (ChatCompletionContentPartFileFileParam).
+//
+// Exactly one of FileData or FileID should be provided. This server only
+// supports inline FileData (a `data:<mime>;base64,...` URI); FileID is not
+// proxied and returns a 400.
+type FilePart struct {
+	// FileData is an inline `data:<mime>;base64,...` URI carrying the file bytes.
+	FileData string `json:"file_data,omitempty"`
+	// Filename is the original file name; surfaced as the attachment display name.
+	Filename string `json:"filename,omitempty"`
+	// FileID references a file previously uploaded via the OpenAI Files API.
+	// Not supported by this server.
+	FileID string `json:"file_id,omitempty"`
+}
+
 // ContentPart represents a single part of multimodal content.
 type ContentPart struct {
 	Type     string    `json:"type"`
 	Text     string    `json:"text,omitempty"`
 	ImageURL *ImageURL `json:"image_url,omitempty"`
+	File     *FilePart `json:"file,omitempty"`
 }
 
 // MessageContent handles the polymorphic "content" field in OpenAI messages.
@@ -77,9 +95,20 @@ func (mc MessageContent) ImageParts() []ContentPart {
 	return imgs
 }
 
+// FileParts returns only the file content parts.
+func (mc MessageContent) FileParts() []ContentPart {
+	var files []ContentPart
+	for _, p := range mc.Parts {
+		if p.Type == "file" && p.File != nil {
+			files = append(files, p)
+		}
+	}
+	return files
+}
+
 // IsMultimodal returns true if the content contains non-text parts.
 func (mc MessageContent) IsMultimodal() bool {
-	return len(mc.ImageParts()) > 0
+	return len(mc.ImageParts()) > 0 || len(mc.FileParts()) > 0
 }
 
 func (mc MessageContent) MarshalJSON() ([]byte, error) {

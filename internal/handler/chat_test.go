@@ -4,13 +4,21 @@ import (
 	"encoding/base64"
 	"log/slog"
 	"os"
+	"strings"
 	"testing"
+
+	copilot "github.com/github/copilot-sdk/go"
 
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/oai"
 )
 
+// silentLogger keeps tests quiet by routing slog output to /dev/null at error level.
+func silentLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+}
+
 func TestParseDataURI(t *testing.T) {
-	pngData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
+	pngData := []byte{0x89, 0x50, 0x4E, 0x47}
 	b64 := base64.StdEncoding.EncodeToString(pngData)
 	uri := "data:image/png;base64," + b64
 
@@ -27,35 +35,28 @@ func TestParseDataURI(t *testing.T) {
 }
 
 func TestParseDataURI_NotDataURI(t *testing.T) {
-	_, _, err := parseDataURI("https://example.com/image.png")
-	if err == nil {
+	if _, _, err := parseDataURI("https://example.com/image.png"); err == nil {
 		t.Error("expected error for non-data URI")
 	}
 }
 
 func TestParseDataURI_InvalidBase64(t *testing.T) {
-	_, _, err := parseDataURI("data:image/png;base64,!!!invalid!!!")
-	if err == nil {
+	if _, _, err := parseDataURI("data:image/png;base64,!!!invalid!!!"); err == nil {
 		t.Error("expected error for invalid base64")
 	}
 }
 
 func TestParseDataURI_NoBase64Encoding(t *testing.T) {
-	_, _, err := parseDataURI("data:text/plain,Hello")
-	if err == nil {
+	if _, _, err := parseDataURI("data:text/plain,Hello"); err == nil {
 		t.Error("expected error for non-base64 encoding")
 	}
 }
 
-func TestExtractImageAttachments_NoImages(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+func TestExtractAttachments_NoAttachments(t *testing.T) {
 	messages := []oai.Message{
 		{Role: "user", Content: oai.NewTextContent("Hello")},
 	}
-
-	attachments, cleanup, err := extractImageAttachments(messages, logger)
-	defer cleanup()
-
+	attachments, err := extractAttachments(messages, silentLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,12 +65,10 @@ func TestExtractImageAttachments_NoImages(t *testing.T) {
 	}
 }
 
-func TestExtractImageAttachments_WithDataURI(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
+func TestExtractAttachments_ImageURL_DataURI(t *testing.T) {
 	pngData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A}
-	b64 := base64.StdEncoding.EncodeToString(pngData)
-	dataURI := "data:image/png;base64," + b64
+	pngB64 := base64.StdEncoding.EncodeToString(pngData)
+	dataURI := "data:image/png;base64," + pngB64
 
 	messages := []oai.Message{
 		{
@@ -83,57 +82,43 @@ func TestExtractImageAttachments_WithDataURI(t *testing.T) {
 		},
 	}
 
-	attachments, cleanup, err := extractImageAttachments(messages, logger)
+	attachments, err := extractAttachments(messages, silentLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer cleanup()
-
 	if len(attachments) != 1 {
 		t.Fatalf("expected 1 attachment, got %d", len(attachments))
 	}
-	if attachments[0].Path == nil {
-		t.Fatal("expected attachment Path to be set")
+	blob, ok := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	if !ok {
+		t.Fatalf("expected *UserMessageAttachmentBlob, got %T", attachments[0])
 	}
-
-	// Verify the temp file exists and contains the right data
-	content, err := os.ReadFile(*attachments[0].Path)
-	if err != nil {
-		t.Fatalf("failed to read temp file: %v", err)
+	if blob.MIMEType != "image/png" {
+		t.Errorf("expected MIMEType=image/png, got %q", blob.MIMEType)
 	}
-	if len(content) != len(pngData) {
-		t.Errorf("expected %d bytes in file, got %d", len(pngData), len(content))
+	if blob.Data != pngB64 {
+		t.Errorf("expected Data to round-trip to original base64; got len=%d want len=%d", len(blob.Data), len(pngB64))
 	}
-
-	// Run cleanup and verify file is removed
-	cleanup()
-	if _, err := os.Stat(*attachments[0].Path); !os.IsNotExist(err) {
-		t.Error("expected temp file to be removed after cleanup")
+	if blob.DisplayName != nil {
+		t.Errorf("expected DisplayName=nil for unnamed image_url, got %q", *blob.DisplayName)
 	}
 }
 
-func TestExtractImageAttachments_MultipleImages(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	imgData := []byte{0xFF, 0xD8, 0xFF}
-	b64 := base64.StdEncoding.EncodeToString(imgData)
-
+func TestExtractAttachments_ImageURL_Multiple(t *testing.T) {
+	imgB64 := base64.StdEncoding.EncodeToString([]byte{0xFF, 0xD8, 0xFF})
 	messages := []oai.Message{
 		{
 			Role: "user",
 			Content: oai.MessageContent{
 				Parts: []oai.ContentPart{
-					{Type: "text", Text: "Compare these images"},
-					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "data:image/jpeg;base64," + b64}},
-					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "data:image/png;base64," + b64}},
+					{Type: "text", Text: "Compare"},
+					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "data:image/jpeg;base64," + imgB64}},
+					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "data:image/png;base64," + imgB64}},
 				},
 			},
 		},
 	}
-
-	attachments, cleanup, err := extractImageAttachments(messages, logger)
-	defer cleanup()
-
+	attachments, err := extractAttachments(messages, silentLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,29 +127,194 @@ func TestExtractImageAttachments_MultipleImages(t *testing.T) {
 	}
 }
 
-func TestExtractImageAttachments_SkipsHTTPURLs(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+func TestExtractAttachments_ImageURL_SkipsHTTPURLs(t *testing.T) {
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "https://example.com/image.png"}},
+				},
+			},
+		},
+	}
+	attachments, err := extractAttachments(messages, silentLogger())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(attachments) != 0 {
+		t.Errorf("expected 0 attachments (HTTP URLs skipped), got %d", len(attachments))
+	}
+}
+
+func TestExtractAttachments_ImageURL_RejectsPDF(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4"))
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "data:application/pdf;base64," + b64}},
+				},
+			},
+		},
+	}
+	_, err := extractAttachments(messages, silentLogger())
+	if err == nil {
+		t.Fatal("expected error rejecting PDF on image_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "image/*") || !strings.Contains(err.Error(), "file") {
+		t.Errorf("expected error to mention image/* and file part, got: %v", err)
+	}
+}
+
+func TestExtractAttachments_FilePart_PDF(t *testing.T) {
+	pdfData := []byte("%PDF-1.4 fake content for test")
+	pdfB64 := base64.StdEncoding.EncodeToString(pdfData)
+	dataURI := "data:application/pdf;base64," + pdfB64
 
 	messages := []oai.Message{
 		{
 			Role: "user",
 			Content: oai.MessageContent{
 				Parts: []oai.ContentPart{
-					{Type: "text", Text: "What is this?"},
-					{Type: "image_url", ImageURL: &oai.ImageURL{URL: "https://example.com/image.png"}},
+					{Type: "text", Text: "Summarize this PDF"},
+					{Type: "file", File: &oai.FilePart{FileData: dataURI, Filename: "report.pdf"}},
 				},
 			},
 		},
 	}
 
-	attachments, cleanup, err := extractImageAttachments(messages, logger)
-	defer cleanup()
-
+	attachments, err := extractAttachments(messages, silentLogger())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(attachments) != 0 {
-		t.Errorf("expected 0 attachments (HTTP URLs skipped), got %d", len(attachments))
+	if len(attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(attachments))
+	}
+	blob, ok := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	if !ok {
+		t.Fatalf("expected *UserMessageAttachmentBlob, got %T", attachments[0])
+	}
+	if blob.MIMEType != "application/pdf" {
+		t.Errorf("expected MIMEType=application/pdf, got %q", blob.MIMEType)
+	}
+	if blob.Data != pdfB64 {
+		t.Errorf("expected Data to round-trip to original base64")
+	}
+	if blob.DisplayName == nil || *blob.DisplayName != "report.pdf" {
+		t.Errorf("expected DisplayName=report.pdf, got %v", blob.DisplayName)
+	}
+}
+
+func TestExtractAttachments_FilePart_FilenameSanitized(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte("x"))
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "file", File: &oai.FilePart{
+						FileData: "data:application/pdf;base64," + b64,
+						Filename: "/etc/passwd",
+					}},
+				},
+			},
+		},
+	}
+	attachments, err := extractAttachments(messages, silentLogger())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	blob := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	if blob.DisplayName == nil || *blob.DisplayName != "passwd" {
+		t.Errorf("expected sanitized DisplayName=passwd, got %v", blob.DisplayName)
+	}
+}
+
+func TestExtractAttachments_FilePart_FileIDRejected(t *testing.T) {
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "file", File: &oai.FilePart{FileID: "file-abc123"}},
+				},
+			},
+		},
+	}
+	_, err := extractAttachments(messages, silentLogger())
+	if err == nil {
+		t.Fatal("expected error for file_id, got nil")
+	}
+	if !strings.Contains(err.Error(), "file_id is not supported") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAttachments_FilePart_MissingFileData(t *testing.T) {
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "file", File: &oai.FilePart{Filename: "empty.pdf"}},
+				},
+			},
+		},
+	}
+	_, err := extractAttachments(messages, silentLogger())
+	if err == nil {
+		t.Fatal("expected error for missing file_data, got nil")
+	}
+	if !strings.Contains(err.Error(), "file_data") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestExtractAttachments_FilePart_NonDataURI(t *testing.T) {
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "file", File: &oai.FilePart{FileData: "https://example.com/doc.pdf"}},
+				},
+			},
+		},
+	}
+	_, err := extractAttachments(messages, silentLogger())
+	if err == nil {
+		t.Fatal("expected error for non-data URI, got nil")
+	}
+}
+
+func TestExtractAttachments_FilePart_NoFilenamePassThrough(t *testing.T) {
+	// An unnamed file part should still produce a Blob with the MIME type
+	// preserved; DisplayName stays nil.
+	b64 := base64.StdEncoding.EncodeToString([]byte("hello"))
+	messages := []oai.Message{
+		{
+			Role: "user",
+			Content: oai.MessageContent{
+				Parts: []oai.ContentPart{
+					{Type: "file", File: &oai.FilePart{
+						FileData: "data:application/octet-stream;base64," + b64,
+					}},
+				},
+			},
+		},
+	}
+	attachments, err := extractAttachments(messages, silentLogger())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	blob := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	if blob.MIMEType != "application/octet-stream" {
+		t.Errorf("expected MIME passed through, got %q", blob.MIMEType)
+	}
+	if blob.DisplayName != nil {
+		t.Errorf("expected DisplayName=nil for unnamed file part, got %q", *blob.DisplayName)
 	}
 }
 
@@ -181,7 +331,6 @@ func TestBuildPrompt_MultimodalContent(t *testing.T) {
 			},
 		},
 	}
-
 	prompt := buildPrompt(messages)
 	if prompt != "Describe this image" {
 		t.Errorf("expected 'Describe this image', got %q", prompt)
@@ -200,7 +349,6 @@ func TestExtractSystemMessage_MultimodalContent(t *testing.T) {
 		},
 		{Role: "user", Content: oai.NewTextContent("Hello")},
 	}
-
 	sysMsg := extractSystemMessage(messages)
 	if sysMsg != "System instruction" {
 		t.Errorf("expected 'System instruction', got %q", sysMsg)

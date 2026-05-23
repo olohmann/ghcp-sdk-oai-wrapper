@@ -100,7 +100,7 @@ func TestNowRFC3339Milli_Format(t *testing.T) {
 func TestTagsResponse_JSONMarshal(t *testing.T) {
 	resp := TagsResponse{
 		Models: []ModelInfo{
-			{Name: "gpt-4.1", Model: "gpt-4.1", ModifiedAt: "2024-01-01T00:00:00.000Z"},
+			{Name: "gpt-5.4", Model: "gpt-5.4", ModifiedAt: "2024-01-01T00:00:00.000Z"},
 		},
 	}
 	data, err := json.Marshal(resp)
