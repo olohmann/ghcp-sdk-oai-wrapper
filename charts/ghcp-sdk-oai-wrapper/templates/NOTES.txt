@@ -12,7 +12,7 @@
     {{- if .Values.secrets.apiKey }}
     -H "Authorization: Bearer <your-api-key>" \
     {{- end }}
-    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"Hello!"}]}'
+    -d '{"model":"gpt-5.4","messages":[{"role":"user","content":"Hello!"}]}'
 
 {{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
 

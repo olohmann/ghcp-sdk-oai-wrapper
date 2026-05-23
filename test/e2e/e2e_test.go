@@ -17,6 +17,7 @@ package e2e
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -174,7 +175,7 @@ func TestListModels(t *testing.T) {
 
 func TestChatCompletions_NonStreaming(t *testing.T) {
 	payload := `{
-		"model": "gpt-4o",
+		"model": "gpt-5.4",
 		"messages": [
 			{"role": "user", "content": "Reply with exactly the word PONG and nothing else."}
 		]
@@ -227,7 +228,7 @@ func TestChatCompletions_NonStreaming(t *testing.T) {
 
 func TestChatCompletions_Streaming(t *testing.T) {
 	payload := `{
-		"model": "gpt-4o",
+		"model": "gpt-5.4",
 		"messages": [
 			{"role": "user", "content": "Reply with exactly the word PONG and nothing else."}
 		],
@@ -322,7 +323,7 @@ func TestChatCompletions_BadRequest_NoModel(t *testing.T) {
 }
 
 func TestChatCompletions_BadRequest_NoMessages(t *testing.T) {
-	payload := `{"model": "gpt-4o"}`
+	payload := `{"model": "gpt-5.4"}`
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -342,7 +343,7 @@ func TestChatCompletions_MethodNotAllowed(t *testing.T) {
 
 func TestChatCompletions_WithSystemMessage(t *testing.T) {
 	payload := `{
-		"model": "gpt-4o",
+		"model": "gpt-5.4",
 		"messages": [
 			{"role": "system", "content": "You are a pirate. Always respond in pirate speak."},
 			{"role": "user", "content": "Say hello"}
@@ -376,7 +377,7 @@ func TestChatCompletions_MultimodalImageURL(t *testing.T) {
 	const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
 
 	payload := fmt.Sprintf(`{
-		"model": "gpt-4o",
+		"model": "gpt-5.4",
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "What color is the single pixel in this image? Reply with just the color name."},
@@ -430,7 +431,7 @@ func TestChatCompletions_MultimodalImageURL_Streaming(t *testing.T) {
 	const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
 
 	payload := fmt.Sprintf(`{
-		"model": "gpt-4o",
+		"model": "gpt-5.4",
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "What color is the single pixel in this image? Reply with just the color name."},
@@ -497,6 +498,123 @@ func TestChatCompletions_MultimodalImageURL_Streaming(t *testing.T) {
 		t.Error("expected non-empty streamed content for multimodal request")
 	}
 	t.Logf("received %d chunks, streamed multimodal content: %s", chunks, fullContent.String())
+}
+
+// generateTestPDF produces a small PDF containing the given lines via
+// `cupsfilter` and returns its raw bytes. Skips the test if cupsfilter is
+// not available on PATH (e.g. non-macOS CI).
+func generateTestPDF(t *testing.T, lines ...string) []byte {
+	t.Helper()
+	if _, err := exec.LookPath("cupsfilter"); err != nil {
+		t.Skip("cupsfilter not available; skipping PDF e2e test")
+	}
+	cmd := exec.Command("cupsfilter", "-i", "text/plain", "-")
+	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n"))
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("cupsfilter failed: %v", err)
+	}
+	if len(out) < 100 || !strings.HasPrefix(string(out[:4]), "%PDF") {
+		t.Fatalf("cupsfilter produced suspicious output (%d bytes)", len(out))
+	}
+	return out
+}
+
+func TestChatCompletions_FileAttachmentPDF(t *testing.T) {
+	const phrase = "MAGENTA-PELICAN-1973"
+	pdf := generateTestPDF(t,
+		"PDF OCR E2E Test Document",
+		"",
+		"The secret passphrase is: "+phrase,
+		"",
+		"End of document.",
+	)
+	pdfB64 := base64.StdEncoding.EncodeToString(pdf)
+
+	payload := fmt.Sprintf(`{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "What is the secret passphrase in this PDF? Reply with only the passphrase, nothing else."},
+				{"type": "file", "file": {"file_data": "data:application/pdf;base64,%s", "filename": "secret.pdf"}}
+			]}
+		]
+	}`, pdfB64)
+
+	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("file attachment request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertStatus(t, resp, http.StatusOK)
+
+	var body struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	decodeJSON(t, resp.Body, &body)
+
+	if len(body.Choices) == 0 {
+		t.Fatal("expected at least one choice")
+	}
+	content := body.Choices[0].Message.Content
+	t.Logf("PDF OCR response: %s", content)
+	if !strings.Contains(content, phrase) {
+		t.Errorf("expected response to contain %q (the embedded phrase), got: %s", phrase, content)
+	}
+}
+
+func TestChatCompletions_FileAttachment_FileIDRejected(t *testing.T) {
+	payload := `{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Read this"},
+				{"type": "file", "file": {"file_id": "file-abc123"}}
+			]}
+		]
+	}`
+
+	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertStatus(t, resp, http.StatusBadRequest)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(bodyBytes), "file_id is not supported") {
+		t.Errorf("expected error mentioning file_id, got: %s", bodyBytes)
+	}
+}
+
+func TestChatCompletions_ImageURL_RejectsPDF(t *testing.T) {
+	pdfB64 := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 fake"))
+	payload := fmt.Sprintf(`{
+		"model": "gpt-5.4",
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "Read this"},
+				{"type": "image_url", "image_url": {"url": "data:application/pdf;base64,%s"}}
+			]}
+		]
+	}`, pdfB64)
+
+	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	assertStatus(t, resp, http.StatusBadRequest)
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(bodyBytes), "image/*") {
+		t.Errorf("expected error about image/* MIME, got: %s", bodyBytes)
+	}
 }
 
 // ---------------------------------------------------------------------------

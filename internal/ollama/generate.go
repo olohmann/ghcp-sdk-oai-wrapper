@@ -83,8 +83,10 @@ func handleGenerateNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 	}
 
 	content := ""
-	if reply != nil && reply.Data.Content != nil {
-		content = *reply.Data.Content
+	if reply != nil {
+		if d, ok := reply.Data.(*copilot.AssistantMessageData); ok {
+			content = d.Content
+		}
 	}
 
 	duration := time.Since(start)
@@ -129,14 +131,14 @@ func handleGenerateStreaming(ctx context.Context, w http.ResponseWriter, client 
 	var writeErrors atomic.Int64
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
-		switch event.Type {
-		case copilot.AssistantMessageDelta:
+		switch d := event.Data.(type) {
+		case *copilot.AssistantMessageDeltaData:
 			gotDelta.Store(true)
-			if event.Data.DeltaContent != nil {
+			if d.DeltaContent != "" {
 				if err := ndjson.WriteLine(GenerateStreamChunk{
 					Model:     req.Model,
 					CreatedAt: NowRFC3339Milli(),
-					Response:  *event.Data.DeltaContent,
+					Response:  d.DeltaContent,
 					Done:      false,
 				}); err != nil {
 					writeErrors.Add(1)
@@ -144,12 +146,12 @@ func handleGenerateStreaming(ctx context.Context, w http.ResponseWriter, client 
 				}
 			}
 
-		case copilot.AssistantMessage:
-			if !gotDelta.Load() && event.Data.Content != nil {
+		case *copilot.AssistantMessageData:
+			if !gotDelta.Load() && d.Content != "" {
 				if err := ndjson.WriteLine(GenerateStreamChunk{
 					Model:     req.Model,
 					CreatedAt: NowRFC3339Milli(),
-					Response:  *event.Data.Content,
+					Response:  d.Content,
 					Done:      false,
 				}); err != nil {
 					writeErrors.Add(1)
@@ -157,7 +159,7 @@ func handleGenerateStreaming(ctx context.Context, w http.ResponseWriter, client 
 				}
 			}
 
-		case copilot.SessionIdle:
+		case *copilot.SessionIdleData:
 			duration := time.Since(start)
 			metrics.RecordCompletion(req.Model, true, "success", duration)
 			_ = ndjson.WriteLine(GenerateStreamChunk{

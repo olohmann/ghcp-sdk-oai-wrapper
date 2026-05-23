@@ -1,6 +1,7 @@
 package oai
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 )
@@ -206,7 +207,7 @@ func TestMessage_UnmarshalJSON_MultimodalContent(t *testing.T) {
 
 func TestChatCompletionRequest_UnmarshalJSON_Multimodal(t *testing.T) {
 	raw := `{
-		"model": "gpt-4o",
+		"model": "gpt-5.4",
 		"messages": [
 			{"role": "system", "content": "You are helpful."},
 			{"role": "user", "content": [
@@ -219,7 +220,7 @@ func TestChatCompletionRequest_UnmarshalJSON_Multimodal(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if req.Model != "gpt-4o" {
+	if req.Model != "gpt-5.4" {
 		t.Errorf("unexpected model: %q", req.Model)
 	}
 	if len(req.Messages) != 2 {
@@ -237,5 +238,89 @@ func TestChatCompletionRequest_UnmarshalJSON_Multimodal(t *testing.T) {
 	}
 	if userMsg.Content.TextContent() != "Describe this image" {
 		t.Errorf("unexpected text content: %q", userMsg.Content.TextContent())
+	}
+}
+
+func TestMessageContent_UnmarshalJSON_FilePart(t *testing.T) {
+	raw := `[
+		{"type":"text","text":"Read this PDF"},
+		{"type":"file","file":{"file_data":"data:application/pdf;base64,JVBERi0xLj","filename":"report.pdf"}}
+	]`
+	var mc MessageContent
+	if err := json.Unmarshal([]byte(raw), &mc); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(mc.Parts) != 2 {
+		t.Fatalf("expected 2 parts, got %d", len(mc.Parts))
+	}
+	filePart := mc.Parts[1]
+	if filePart.Type != "file" {
+		t.Errorf("expected type=file, got %q", filePart.Type)
+	}
+	if filePart.File == nil {
+		t.Fatal("expected File to be set")
+	}
+	if filePart.File.FileData != "data:application/pdf;base64,JVBERi0xLj" {
+		t.Errorf("unexpected FileData: %q", filePart.File.FileData)
+	}
+	if filePart.File.Filename != "report.pdf" {
+		t.Errorf("expected Filename=report.pdf, got %q", filePart.File.Filename)
+	}
+}
+
+func TestMessageContent_FileParts(t *testing.T) {
+	mc := MessageContent{
+		Parts: []ContentPart{
+			{Type: "text", Text: "Hi"},
+			{Type: "file", File: &FilePart{FileData: "data:application/pdf;base64,abc", Filename: "a.pdf"}},
+			{Type: "image_url", ImageURL: &ImageURL{URL: "data:image/png;base64,xyz"}},
+			{Type: "file", File: &FilePart{FileData: "data:text/plain;base64,def", Filename: "b.txt"}},
+		},
+	}
+	files := mc.FileParts()
+	if len(files) != 2 {
+		t.Fatalf("expected 2 file parts, got %d", len(files))
+	}
+	if files[0].File.Filename != "a.pdf" || files[1].File.Filename != "b.txt" {
+		t.Errorf("unexpected file parts: %+v", files)
+	}
+}
+
+func TestMessageContent_IsMultimodal_FileOnly(t *testing.T) {
+	mc := MessageContent{
+		Parts: []ContentPart{
+			{Type: "text", Text: "Read this"},
+			{Type: "file", File: &FilePart{FileData: "data:application/pdf;base64,abc"}},
+		},
+	}
+	if !mc.IsMultimodal() {
+		t.Error("content with file part should be multimodal")
+	}
+}
+
+func TestMessageContent_RoundTrip_FilePart(t *testing.T) {
+	original := MessageContent{
+		Parts: []ContentPart{
+			{Type: "text", Text: "Summarize"},
+			{Type: "file", File: &FilePart{FileData: "data:application/pdf;base64,JVB", Filename: "doc.pdf"}},
+		},
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	var got MessageContent
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if len(got.Parts) != 2 {
+		t.Fatalf("expected 2 parts after round-trip, got %d", len(got.Parts))
+	}
+	if got.Parts[1].File == nil || got.Parts[1].File.Filename != "doc.pdf" {
+		t.Errorf("round-trip lost file part: %+v", got.Parts[1])
+	}
+	// ImageURL should not appear in serialized output.
+	if bytes.Contains(data, []byte(`"image_url"`)) {
+		t.Errorf("unexpected image_url in serialized output: %s", data)
 	}
 }

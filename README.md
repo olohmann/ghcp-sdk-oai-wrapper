@@ -14,7 +14,7 @@ can use GitHub Copilot models through this wrapper without modification.
 ## Features
 
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming modes
-- **Multimodal image support** — `content` accepts the OpenAI array format with `text` and `image_url` parts (base64 data URIs)
+- **Multimodal input** — `content` accepts the OpenAI array format with `text`, `image_url` (images), and `file` (PDFs and other documents) parts as base64 data URIs
 - **`GET /v1/models`** — lists all models available through GitHub Copilot
 - **`GET /healthz`** — health check
 - **`GET /metrics`** — Prometheus-compatible metrics endpoint
@@ -68,7 +68,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d '{
-    "model": "gpt-4.1",
+    "model": "gpt-5.4",
     "messages": [
       {"role": "system", "content": "You are a helpful assistant."},
       {"role": "user", "content": "Hello!"}
@@ -83,7 +83,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d '{
-    "model": "gpt-4.1",
+    "model": "gpt-5.4",
     "messages": [
       {"role": "user", "content": "Tell me a joke"}
     ],
@@ -100,7 +100,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d '{
-    "model": "gpt-4.1",
+    "model": "gpt-5.4",
     "messages": [
       {"role": "user", "content": [
         {"type": "text", "text": "What is in this image?"},
@@ -110,9 +110,47 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-Supported image formats: PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, HEIC, AVIF.
+Supported image formats: any `image/*` MIME the Copilot model accepts (PNG, JPEG, GIF, WebP, etc.). The MIME type is taken from the `data:` URI and passed through to the SDK unchanged — no fixed allow-list.
 
-> **Note:** Only `data:` URIs (inline base64) are supported. External `https://` image URLs are not forwarded to the model.
+> **Note:** Only `data:` URIs (inline base64) are supported. External `https://` image URLs are not forwarded to the model. `image_url` parts must use an `image/*` MIME type — non-image documents like PDFs go through the `file` content part below.
+
+### File Attachments (PDF and other documents)
+
+For non-image attachments such as PDFs, use the official OpenAI `file` content
+part with an inline base64 data URI. The schema matches the
+[`openai/openai-go`](https://github.com/openai/openai-go) Go SDK
+(`ChatCompletionContentPartFileParam`) and the OpenAI Chat Completions API:
+
+```bash
+PDF_B64=$(base64 -i report.pdf | tr -d '\n')
+
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret" \
+  -d "{
+    \"model\": \"gpt-5.4\",
+    \"messages\": [
+      {\"role\": \"user\", \"content\": [
+        {\"type\": \"text\", \"text\": \"Summarize this PDF.\"},
+        {\"type\": \"file\", \"file\": {\"file_data\": \"data:application/pdf;base64,${PDF_B64}\", \"filename\": \"report.pdf\"}}
+      ]}
+    ]
+  }"
+```
+
+Notes:
+- `file.file_data` must be a `data:<mime>;base64,...` URI. The `filename`
+  field is optional but recommended — it surfaces as the attachment's display
+  name to the model.
+- `file.file_id` (referencing a file uploaded via OpenAI's Files API) is
+  **not** supported by this server — embed the file inline via `file_data`
+  instead.
+- The MIME type is passed through to the Copilot SDK as-is — there is no
+  fixed allow-list. Common document types (PDF, plain text, markdown, JSON,
+  CSV) are known to work.
+
+Attachments are forwarded to the Copilot CLI as inline base64 blobs
+(`UserMessageAttachmentBlob`) — no temp files are written to disk.
 
 ### List Models
 
@@ -132,7 +170,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="gpt-4.1",
+    model="gpt-5.4",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
