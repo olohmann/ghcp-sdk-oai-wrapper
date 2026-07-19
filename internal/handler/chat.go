@@ -22,8 +22,11 @@ import (
 
 const maxRequestBodySize = 50 * 1024 * 1024 // 50 MB
 
-// ChatCompletions returns the handler for POST /v1/chat/completions.
-func ChatCompletions(client *wrapper.Client, logger *slog.Logger) http.HandlerFunc {
+// ChatCompletions returns the handler for POST /v1/chat/completions. The
+// registry holds parked tool sessions for faithful OpenAI tool round-trips; it
+// may be nil when tool-calling is not needed (e.g. in tests exercising the
+// method guard).
+func ChatCompletions(client *wrapper.Client, registry *ToolSessionRegistry, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			oai.WriteError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
@@ -51,6 +54,33 @@ func ChatCompletions(client *wrapper.Client, logger *slog.Logger) http.HandlerFu
 			"remote_addr", r.RemoteAddr,
 			"user_agent", r.UserAgent(),
 		)
+
+		// Turn-2 tool resume: the request declares tools AND already carries tool
+		// results, so it echoes back the tool_call IDs we minted on turn-1. We
+		// decode the parking token, resolve the pending call(s) on the same live
+		// session, and continue the original agent loop to its answer. A missing
+		// or expired parked session yields HTTP 409 (there is no replay fallback).
+		if requestHasTools(&req) && hasToolResults(req.Messages) {
+			if req.Stream {
+				handleToolResumeStreaming(r.Context(), w, registry, &req, reqLogger)
+			} else {
+				handleToolResumeNonStreaming(r.Context(), w, registry, &req, reqLogger)
+			}
+			return
+		}
+
+		// Turn-1 tool emission: the request declares tools but carries no tool
+		// results yet, so the model may respond with tool_calls. This path
+		// registers declaration-only tools, intercepts the SDK's pending tool
+		// requests, and parks the live session for the follow-up turn.
+		if requestHasTools(&req) && !hasToolResults(req.Messages) {
+			if req.Stream {
+				handleToolEmitStreaming(r.Context(), w, client, registry, &req, reqLogger)
+			} else {
+				handleToolEmitNonStreaming(r.Context(), w, client, registry, &req, reqLogger)
+			}
+			return
+		}
 
 		if req.Stream {
 			handleStreaming(r.Context(), w, client, &req, reqLogger)
@@ -125,7 +155,8 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	}
 	metrics.RecordImageAttachments(len(attachments))
 
-	session, err := createSession(ctx, client, req, false)
+	prompt := buildPrompt(req.Messages)
+	session, err := createSession(ctx, client, req, false, nil)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
@@ -138,7 +169,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	defer cancel()
 
 	reply, err := session.SendAndWait(sendCtx, copilot.MessageOptions{
-		Prompt:      buildPrompt(req.Messages),
+		Prompt:      prompt,
 		Attachments: attachments,
 	})
 	if err != nil {
@@ -202,7 +233,8 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 		return
 	}
 
-	session, err := createSession(ctx, client, req, true)
+	prompt := buildPrompt(req.Messages)
+	session, err := createSession(ctx, client, req, true, nil)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
@@ -306,7 +338,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	defer unsubscribe()
 
 	_, err = session.Send(ctx, copilot.MessageOptions{
-		Prompt:      buildPrompt(req.Messages),
+		Prompt:      prompt,
 		Attachments: attachments,
 	})
 	if err != nil {
@@ -336,9 +368,9 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	}
 }
 
-func createSession(ctx context.Context, client *wrapper.Client, req *oai.ChatCompletionRequest, streaming bool) (*copilot.Session, error) {
+func createSession(ctx context.Context, client *wrapper.Client, req *oai.ChatCompletionRequest, streaming bool, tools []copilot.Tool) (*copilot.Session, error) {
 	sysMsg := extractSystemMessage(req.Messages)
-	return client.NewChatSession(ctx, req.Model, sysMsg, streaming)
+	return client.NewChatSessionWithTools(ctx, req.Model, sysMsg, streaming, tools)
 }
 
 // extractAttachments scans all messages for `image_url` and `file` content
@@ -371,8 +403,8 @@ func extractAttachments(messages []oai.Message, logger *slog.Logger) ([]copilot.
 				return nil, fmt.Errorf("image_url parts must use an image/* MIME type (got %q); use a `file` content part for documents like PDFs", mimeType)
 			}
 
-			attachments = append(attachments, &copilot.UserMessageAttachmentBlob{
-				Data:     base64.StdEncoding.EncodeToString(data),
+			attachments = append(attachments, &copilot.AttachmentBlob{
+				Data:     copilot.String(base64.StdEncoding.EncodeToString(data)),
 				MIMEType: mimeType,
 			})
 			logger.Info("extracted attachment",
@@ -403,8 +435,8 @@ func extractAttachments(messages []oai.Message, logger *slog.Logger) ([]copilot.
 				return nil, fmt.Errorf("file.file_data data URI is missing its MIME type")
 			}
 
-			blob := &copilot.UserMessageAttachmentBlob{
-				Data:     base64.StdEncoding.EncodeToString(data),
+			blob := &copilot.AttachmentBlob{
+				Data:     copilot.String(base64.StdEncoding.EncodeToString(data)),
 				MIMEType: mimeType,
 			}
 			if file.Filename != "" {
@@ -454,4 +486,3 @@ func parseDataURI(uri string) (mimeType string, data []byte, err error) {
 	}
 	return mimeType, data, nil
 }
-

@@ -32,7 +32,7 @@ func TestHealth(t *testing.T) {
 
 func TestChatCompletions_MethodNotAllowed(t *testing.T) {
 	// Use nil client — we expect the method check to reject before using it
-	h := handler.ChatCompletions(nil, nil)
+	h := handler.ChatCompletions(nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
 	rec := httptest.NewRecorder()
 

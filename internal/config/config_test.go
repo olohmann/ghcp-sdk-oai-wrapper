@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/config"
 )
@@ -28,6 +29,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.CopilotCLIPath != "" {
 		t.Errorf("expected empty CLI path, got %s", cfg.CopilotCLIPath)
 	}
+	if cfg.ToolSessionTTL != 10*time.Minute {
+		t.Errorf("expected default tool session TTL 10m, got %s", cfg.ToolSessionTTL)
+	}
+	if cfg.ToolSessionMaxParked != 256 {
+		t.Errorf("expected default max parked 256, got %d", cfg.ToolSessionMaxParked)
+	}
 }
 
 func TestLoad_CustomValues(t *testing.T) {
@@ -35,11 +42,15 @@ func TestLoad_CustomValues(t *testing.T) {
 	os.Setenv("API_KEY", "test-key")
 	os.Setenv("LOG_LEVEL", "DEBUG")
 	os.Setenv("COPILOT_CLI_PATH", "/usr/bin/copilot")
+	os.Setenv("TOOL_SESSION_TTL", "30s")
+	os.Setenv("TOOL_SESSION_MAX_PARKED", "8")
 	defer func() {
 		os.Unsetenv("PORT")
 		os.Unsetenv("API_KEY")
 		os.Unsetenv("LOG_LEVEL")
 		os.Unsetenv("COPILOT_CLI_PATH")
+		os.Unsetenv("TOOL_SESSION_TTL")
+		os.Unsetenv("TOOL_SESSION_MAX_PARKED")
 	}()
 
 	cfg := config.Load()
@@ -55,5 +66,11 @@ func TestLoad_CustomValues(t *testing.T) {
 	}
 	if cfg.CopilotCLIPath != "/usr/bin/copilot" {
 		t.Errorf("expected /usr/bin/copilot, got %s", cfg.CopilotCLIPath)
+	}
+	if cfg.ToolSessionTTL != 30*time.Second {
+		t.Errorf("expected tool session TTL 30s, got %s", cfg.ToolSessionTTL)
+	}
+	if cfg.ToolSessionMaxParked != 8 {
+		t.Errorf("expected max parked 8, got %d", cfg.ToolSessionMaxParked)
 	}
 }
