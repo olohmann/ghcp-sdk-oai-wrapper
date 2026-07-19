@@ -1,6 +1,6 @@
 module github.com/olohmann/ghcp-sdk-oai-wrapper
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/github/copilot-sdk/go v1.0.7
