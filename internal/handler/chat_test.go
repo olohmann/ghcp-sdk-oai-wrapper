@@ -89,15 +89,15 @@ func TestExtractAttachments_ImageURL_DataURI(t *testing.T) {
 	if len(attachments) != 1 {
 		t.Fatalf("expected 1 attachment, got %d", len(attachments))
 	}
-	blob, ok := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	blob, ok := attachments[0].(*copilot.AttachmentBlob)
 	if !ok {
-		t.Fatalf("expected *UserMessageAttachmentBlob, got %T", attachments[0])
+		t.Fatalf("expected *AttachmentBlob, got %T", attachments[0])
 	}
 	if blob.MIMEType != "image/png" {
 		t.Errorf("expected MIMEType=image/png, got %q", blob.MIMEType)
 	}
-	if blob.Data != pngB64 {
-		t.Errorf("expected Data to round-trip to original base64; got len=%d want len=%d", len(blob.Data), len(pngB64))
+	if blob.Data == nil || *blob.Data != pngB64 {
+		t.Errorf("expected Data to round-trip to original base64; want len=%d", len(pngB64))
 	}
 	if blob.DisplayName != nil {
 		t.Errorf("expected DisplayName=nil for unnamed image_url, got %q", *blob.DisplayName)
@@ -192,14 +192,14 @@ func TestExtractAttachments_FilePart_PDF(t *testing.T) {
 	if len(attachments) != 1 {
 		t.Fatalf("expected 1 attachment, got %d", len(attachments))
 	}
-	blob, ok := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	blob, ok := attachments[0].(*copilot.AttachmentBlob)
 	if !ok {
-		t.Fatalf("expected *UserMessageAttachmentBlob, got %T", attachments[0])
+		t.Fatalf("expected *AttachmentBlob, got %T", attachments[0])
 	}
 	if blob.MIMEType != "application/pdf" {
 		t.Errorf("expected MIMEType=application/pdf, got %q", blob.MIMEType)
 	}
-	if blob.Data != pdfB64 {
+	if blob.Data == nil || *blob.Data != pdfB64 {
 		t.Errorf("expected Data to round-trip to original base64")
 	}
 	if blob.DisplayName == nil || *blob.DisplayName != "report.pdf" {
@@ -226,7 +226,7 @@ func TestExtractAttachments_FilePart_FilenameSanitized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	blob := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	blob := attachments[0].(*copilot.AttachmentBlob)
 	if blob.DisplayName == nil || *blob.DisplayName != "passwd" {
 		t.Errorf("expected sanitized DisplayName=passwd, got %v", blob.DisplayName)
 	}
@@ -309,7 +309,7 @@ func TestExtractAttachments_FilePart_NoFilenamePassThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	blob := attachments[0].(*copilot.UserMessageAttachmentBlob)
+	blob := attachments[0].(*copilot.AttachmentBlob)
 	if blob.MIMEType != "application/octet-stream" {
 		t.Errorf("expected MIME passed through, got %q", blob.MIMEType)
 	}

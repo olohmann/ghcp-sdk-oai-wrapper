@@ -20,6 +20,37 @@ type ChatCompletionRequest struct {
 	FrequencyPenalty *float64       `json:"frequency_penalty,omitempty"`
 	User             string         `json:"user,omitempty"`
 	StreamOptions    *StreamOptions `json:"stream_options,omitempty"`
+	Tools            []Tool         `json:"tools,omitempty"`
+	ToolChoice       any            `json:"tool_choice,omitempty"`
+}
+
+// Tool represents a tool the model may call (OpenAI function-calling schema).
+// Only type "function" is supported.
+type Tool struct {
+	Type     string      `json:"type"`
+	Function FunctionDef `json:"function"`
+}
+
+// FunctionDef describes a callable function exposed to the model.
+type FunctionDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Parameters is a JSON Schema object describing the function arguments.
+	Parameters map[string]any `json:"parameters,omitempty"`
+}
+
+// ToolCall represents a tool invocation emitted by the model.
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall carries the called function name and its arguments as a JSON
+// string (matching the OpenAI wire format).
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // StreamOptions controls streaming behavior.
@@ -142,13 +173,33 @@ type Message struct {
 	Role    string         `json:"role"`
 	Content MessageContent `json:"content"`
 	Name    string         `json:"name,omitempty"`
+	// ToolCalls is set on assistant messages that invoke tools.
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// ToolCallID links a role:"tool" message back to the originating tool call.
+	ToolCallID string `json:"tool_call_id,omitempty"`
 }
 
 // DeltaMessage represents a streaming delta with correct omitempty semantics.
 // Unlike Message, fields are omitted when not set (matching the OpenAI SSE format).
 type DeltaMessage struct {
-	Role    string  `json:"role,omitempty"`
-	Content *string `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   *string         `json:"content,omitempty"`
+	ToolCalls []ToolCallDelta `json:"tool_calls,omitempty"`
+}
+
+// ToolCallDelta is a streaming fragment of a tool call. Index identifies which
+// tool call in the array the fragment belongs to.
+type ToolCallDelta struct {
+	Index    int                `json:"index"`
+	ID       string             `json:"id,omitempty"`
+	Type     string             `json:"type,omitempty"`
+	Function *FunctionCallDelta `json:"function,omitempty"`
+}
+
+// FunctionCallDelta is a streaming fragment of a function call.
+type FunctionCallDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // ChatCompletionResponse represents the OpenAI non-streaming response.

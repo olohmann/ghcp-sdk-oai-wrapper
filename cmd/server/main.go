@@ -77,8 +77,10 @@ func main() {
 		mux.HandleFunc("/api/version", ollama.Version(version))
 		authExempt = []string{"/", "/api/version", "/metrics"}
 	default: // "openai"
+		toolRegistry := handler.NewToolSessionRegistry(cfg.ToolSessionTTL, cfg.ToolSessionMaxParked, logger)
+		toolRegistry.StartGC(context.Background())
 		mux.HandleFunc("/healthz", handler.Health())
-		mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions(client, logger))
+		mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions(client, toolRegistry, logger))
 		mux.HandleFunc("/v1/models", handler.Models(client, logger))
 		authExempt = []string{"/healthz", "/metrics"}
 	}
