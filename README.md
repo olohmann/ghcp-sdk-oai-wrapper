@@ -26,10 +26,13 @@ can use GitHub Copilot models through this wrapper without modification.
 
 ## Prerequisites
 
-- **Go 1.24+**
-- **GitHub Copilot CLI** installed and authenticated
+- **Go 1.25.12+**
+- **GitHub Copilot CLI 1.0.105** installed and authenticated
   (`copilot` must be on your `PATH`, or set `COPILOT_CLI_PATH`)
 - An active **GitHub Copilot subscription**
+
+The wrapper uses Copilot SDK **v1.0.28**. The Docker image pins the matching
+CLI version; source and binary installations must provide the CLI separately.
 
 ## Quick Start
 
@@ -48,6 +51,10 @@ PORT=9090 API_KEY=my-secret LOG_LEVEL=debug ghcp-sdk-oai-wrapper
 ```
 
 Run `make help` for all available targets.
+
+Run unit tests with `make test`. Live integration tests require an authenticated
+Copilot CLI: run `make test-e2e`, or `E2E_MODEL=<model-id> make test-e2e` to use a
+specific model instead of the default `auto`.
 
 ## Configuration
 
@@ -68,7 +75,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "auto",
     "messages": [
       {"role": "system", "content": "You are a helpful assistant."},
       {"role": "user", "content": "Hello!"}
@@ -83,7 +90,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "auto",
     "messages": [
       {"role": "user", "content": "Tell me a joke"}
     ],
@@ -100,7 +107,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d '{
-    "model": "gpt-5.4",
+    "model": "auto",
     "messages": [
       {"role": "user", "content": [
         {"type": "text", "text": "What is in this image?"},
@@ -128,7 +135,7 @@ curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
   -d "{
-    \"model\": \"gpt-5.4\",
+    \"model\": \"auto\",
     \"messages\": [
       {\"role\": \"user\", \"content\": [
         {\"type\": \"text\", \"text\": \"Summarize this PDF.\"},
@@ -170,7 +177,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="gpt-5.4",
+    model="auto",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)

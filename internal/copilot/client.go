@@ -19,11 +19,13 @@ type Client struct {
 
 // NewClient creates a new Copilot SDK client wrapper.
 func NewClient(cliPath string, githubToken string, logger *slog.Logger) *Client {
-	opts := &copilot.ClientOptions{
-		LogLevel: "error",
+	if cliPath == "" {
+		// The SDK defaults to an embedded runtime, which this server does not bundle.
+		cliPath = "copilot"
 	}
-	if cliPath != "" {
-		opts.Connection = copilot.StdioConnection{Path: cliPath}
+	opts := &copilot.ClientOptions{
+		LogLevel:   "error",
+		Connection: copilot.StdioConnection{Path: cliPath},
 	}
 	if githubToken != "" {
 		opts.GitHubToken = githubToken

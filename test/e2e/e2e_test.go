@@ -37,12 +37,16 @@ import (
 var (
 	serverURL string
 	apiKey    = "test-e2e-key"
+	testModel = "auto"
 )
 
 // serverProcess holds the running server for the test suite.
 var serverProcess *exec.Cmd
 
 func TestMain(m *testing.M) {
+	if model := os.Getenv("E2E_MODEL"); model != "" {
+		testModel = model
+	}
 	port, err := freePort()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "e2e: failed to find free port: %v\n", err)
@@ -169,17 +173,18 @@ func TestListModels(t *testing.T) {
 		if m.ID == "" {
 			t.Error("model ID should not be empty")
 		}
+		t.Logf("available model: %s", m.ID)
 	}
 	t.Logf("found %d models", len(body.Data))
 }
 
 func TestChatCompletions_NonStreaming(t *testing.T) {
-	payload := `{
-		"model": "gpt-5.4",
+	payload := fmt.Sprintf(`{
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": "Reply with exactly the word PONG and nothing else."}
 		]
-	}`
+	}`, testModel)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -227,13 +232,13 @@ func TestChatCompletions_NonStreaming(t *testing.T) {
 }
 
 func TestChatCompletions_Streaming(t *testing.T) {
-	payload := `{
-		"model": "gpt-5.4",
+	payload := fmt.Sprintf(`{
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": "Reply with exactly the word PONG and nothing else."}
 		],
 		"stream": true
-	}`
+	}`, testModel)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -323,7 +328,7 @@ func TestChatCompletions_BadRequest_NoModel(t *testing.T) {
 }
 
 func TestChatCompletions_BadRequest_NoMessages(t *testing.T) {
-	payload := `{"model": "gpt-5.4"}`
+	payload := fmt.Sprintf(`{"model": %q}`, testModel)
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
@@ -342,13 +347,13 @@ func TestChatCompletions_MethodNotAllowed(t *testing.T) {
 }
 
 func TestChatCompletions_WithSystemMessage(t *testing.T) {
-	payload := `{
-		"model": "gpt-5.4",
+	payload := fmt.Sprintf(`{
+		"model": %q,
 		"messages": [
 			{"role": "system", "content": "You are a pirate. Always respond in pirate speak."},
 			{"role": "user", "content": "Say hello"}
 		]
-	}`
+	}`, testModel)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -377,14 +382,14 @@ func TestChatCompletions_MultimodalImageURL(t *testing.T) {
 	const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
 
 	payload := fmt.Sprintf(`{
-		"model": "gpt-5.4",
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "What color is the single pixel in this image? Reply with just the color name."},
 				{"type": "image_url", "image_url": {"url": "data:image/png;base64,%s"}}
 			]}
 		]
-	}`, tinyPNGBase64)
+	}`, testModel, tinyPNGBase64)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -431,7 +436,7 @@ func TestChatCompletions_MultimodalImageURL_Streaming(t *testing.T) {
 	const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
 
 	payload := fmt.Sprintf(`{
-		"model": "gpt-5.4",
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "What color is the single pixel in this image? Reply with just the color name."},
@@ -439,7 +444,7 @@ func TestChatCompletions_MultimodalImageURL_Streaming(t *testing.T) {
 			]}
 		],
 		"stream": true
-	}`, tinyPNGBase64)
+	}`, testModel, tinyPNGBase64)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -532,14 +537,14 @@ func TestChatCompletions_FileAttachmentPDF(t *testing.T) {
 	pdfB64 := base64.StdEncoding.EncodeToString(pdf)
 
 	payload := fmt.Sprintf(`{
-		"model": "gpt-5.4",
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "What is the secret passphrase in this PDF? Reply with only the passphrase, nothing else."},
 				{"type": "file", "file": {"file_data": "data:application/pdf;base64,%s", "filename": "secret.pdf"}}
 			]}
 		]
-	}`, pdfB64)
+	}`, testModel, pdfB64)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -569,15 +574,15 @@ func TestChatCompletions_FileAttachmentPDF(t *testing.T) {
 }
 
 func TestChatCompletions_FileAttachment_FileIDRejected(t *testing.T) {
-	payload := `{
-		"model": "gpt-5.4",
+	payload := fmt.Sprintf(`{
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "Read this"},
 				{"type": "file", "file": {"file_id": "file-abc123"}}
 			]}
 		]
-	}`
+	}`, testModel)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
@@ -595,14 +600,14 @@ func TestChatCompletions_FileAttachment_FileIDRejected(t *testing.T) {
 func TestChatCompletions_ImageURL_RejectsPDF(t *testing.T) {
 	pdfB64 := base64.StdEncoding.EncodeToString([]byte("%PDF-1.4 fake"))
 	payload := fmt.Sprintf(`{
-		"model": "gpt-5.4",
+		"model": %q,
 		"messages": [
 			{"role": "user", "content": [
 				{"type": "text", "text": "Read this"},
 				{"type": "image_url", "image_url": {"url": "data:application/pdf;base64,%s"}}
 			]}
 		]
-	}`, pdfB64)
+	}`, testModel, pdfB64)
 
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {

@@ -3,7 +3,7 @@ module github.com/olohmann/ghcp-sdk-oai-wrapper
 go 1.25.12
 
 require (
-	github.com/github/copilot-sdk/go v1.0.7
+	github.com/github/copilot-sdk/go v1.0.28
 	github.com/prometheus/client_golang v1.23.2
 )
 

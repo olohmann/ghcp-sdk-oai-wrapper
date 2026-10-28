@@ -68,7 +68,7 @@ func postJSON(t *testing.T, path string, payload any) *http.Response {
 // and a well-formed get_weather tool call.
 func TestChatCompletions_ToolCall_NonStreaming(t *testing.T) {
 	payload := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool to answer weather questions. Do not answer from your own knowledge."},
 			{"role": "user", "content": "What's the weather in Paris right now? Use the get_weather tool."},
@@ -121,7 +121,7 @@ func TestChatCompletions_ToolRoundTrip_NonStreaming(t *testing.T) {
 
 	// Turn 1: get the tool call.
 	turn1 := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool to answer weather questions. Do not answer from your own knowledge."},
 			{"role": "user", "content": "What's the weather in Paris right now? Use the get_weather tool."},
@@ -164,7 +164,7 @@ func TestChatCompletions_ToolRoundTrip_NonStreaming(t *testing.T) {
 		"content":      "In Paris " + distinctive + ".",
 	}
 	turn2 := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool to answer weather questions. Report exactly what the tool returns."},
 			{"role": "user", "content": "What's the weather in Paris right now? Use the get_weather tool."},
@@ -208,7 +208,7 @@ func TestChatCompletions_ToolSessionExpired_409(t *testing.T) {
 	// underscore-free hex so it decodes cleanly, but no session exists for it.
 	fakeID := "call_deadbeefdeadbeefdeadbeefdeadbeef_0"
 	turn2 := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool."},
 			{"role": "user", "content": "What's the weather in Paris? Use the get_weather tool."},
@@ -247,7 +247,7 @@ func TestChatCompletions_ToolRoundTrip_Streaming(t *testing.T) {
 
 	// Turn 1 (non-streaming) to obtain the minted tool_call id cleanly.
 	turn1 := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool to answer weather questions. Do not answer from your own knowledge."},
 			{"role": "user", "content": "What's the weather in Paris right now? Use the get_weather tool."},
@@ -270,7 +270,7 @@ func TestChatCompletions_ToolRoundTrip_Streaming(t *testing.T) {
 	// Turn 2 (streaming): resolve the parked call with a distinctive result.
 	const distinctive = "the weather is 42 degrees Celsius and raining frogs"
 	turn2 := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool to answer weather questions. Report exactly what the tool returns."},
 			{"role": "user", "content": "What's the weather in Paris right now? Use the get_weather tool."},
@@ -355,7 +355,7 @@ func TestChatCompletions_ToolMultiStep_Parked(t *testing.T) {
 	tools := []any{weatherTool}
 
 	turn1 := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool for EACH city, one call at a time. Never answer a city's weather from your own knowledge."},
 			{"role": "user", "content": "Compare the weather in Paris and Berlin. Call get_weather for Paris first."},
@@ -399,7 +399,7 @@ func TestChatCompletions_ToolMultiStep_Parked(t *testing.T) {
 	}
 
 	turn2 := map[string]any{
-		"model":       "gpt-5.4",
+		"model":       testModel,
 		"messages":    msgs,
 		"tools":       tools,
 		"tool_choice": "auto",
@@ -438,7 +438,7 @@ func TestChatCompletions_ToolMultiStep_Parked(t *testing.T) {
 // emitted as tool_calls deltas and terminated with finish_reason:"tool_calls".
 func TestChatCompletions_ToolCall_Streaming(t *testing.T) {
 	payload := map[string]any{
-		"model": "gpt-5.4",
+		"model": testModel,
 		"messages": []map[string]any{
 			{"role": "system", "content": "You must use the get_weather tool to answer weather questions. Do not answer from your own knowledge."},
 			{"role": "user", "content": "What's the weather in Paris right now? Use the get_weather tool."},
