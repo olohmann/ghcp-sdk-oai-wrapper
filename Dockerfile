@@ -18,7 +18,7 @@ FROM node:22-slim
 # protocol version that must match the CLI; rebuilding the image later
 # against a newer CLI could break compatibility silently. Bump intentionally
 # alongside the github.com/github/copilot-sdk/go module version.
-ARG COPILOT_CLI_VERSION=1.0.51
+ARG COPILOT_CLI_VERSION=1.0.105
 
 RUN apt-get update && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends ca-certificates git wget \
