@@ -34,5 +34,6 @@ Both modes share the same Copilot SDK backend via `internal/copilot.Client.NewCh
 - Zero external frameworks (stdlib + Copilot SDK only)
 - Handlers are factory functions returning `http.HandlerFunc`
 - Structured logging with `log/slog` (JSON output)
-- Configuration via env vars; CLI flags (`--port`, `--mode`) override env vars
+- Configuration via env vars; CLI flags (`--port`, `--mode`, `--default-model`) override env vars
+- Requests without a `model` use `DEFAULT_MODEL` (default `claude-haiku-5.5`)
 - Docker base image: `node:22-slim` (Debian, glibc required by Copilot CLI native binary; Alpine/musl does NOT work)

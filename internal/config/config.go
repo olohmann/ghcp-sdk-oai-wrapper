@@ -26,10 +26,16 @@ type Config struct {
 	// session awaiting the client's tool results between turn-1 and turn-2 of an
 	// OpenAI tool round-trip) is retained before it is evicted and torn down.
 	ToolSessionTTL time.Duration
+	// DefaultModel is the model used when a request does not specify one.
+	DefaultModel string
 	// ToolSessionMaxParked caps the number of concurrently parked tool sessions.
 	// When the cap is reached the oldest parked session is evicted.
 	ToolSessionMaxParked int
 }
+
+// DefaultModel is the built-in fallback model: fast (sub-second time to first
+// token), in the cheapest price tier, and strong at summarisation.
+const DefaultModel = "claude-haiku-5.5"
 
 // Load reads configuration from environment variables.
 func Load() *Config {
@@ -40,13 +46,17 @@ func Load() *Config {
 		CopilotCLIPath:       os.Getenv("COPILOT_CLI_PATH"),
 		GitHubToken:          os.Getenv("GITHUB_TOKEN"),
 		Mode:                 strings.ToLower(envOrDefault("MODE", "openai")),
+		DefaultModel:         envOrDefault("DEFAULT_MODEL", DefaultModel),
 		ToolSessionTTL:       envDurationOrDefault("TOOL_SESSION_TTL", 10*time.Minute),
 		ToolSessionMaxParked: envIntOrDefault("TOOL_SESSION_MAX_PARKED", 256),
 	}
 }
 
 // ApplyFlags overrides configuration with CLI flag values (if non-empty).
-func (c *Config) ApplyFlags(flagPort, flagMode string) {
+func (c *Config) ApplyFlags(flagPort, flagMode, flagDefaultModel string) {
+	if flagDefaultModel != "" {
+		c.DefaultModel = flagDefaultModel
+	}
 	if flagPort != "" {
 		c.Port = flagPort
 	}

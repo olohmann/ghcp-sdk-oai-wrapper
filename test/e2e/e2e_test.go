@@ -28,6 +28,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -317,14 +319,28 @@ func TestChatCompletions_Streaming(t *testing.T) {
 	t.Logf("received %d chunks, full content: %s", len(chunks), fullContent.String())
 }
 
-func TestChatCompletions_BadRequest_NoModel(t *testing.T) {
-	payload := `{"messages": [{"role": "user", "content": "hi"}]}`
+func TestChatCompletions_NoModel_UsesDefault(t *testing.T) {
+	payload := `{"messages": [{"role": "user", "content": "Reply with exactly: OK"}]}`
 	resp, err := doRequest(t, "POST", "/v1/chat/completions", strings.NewReader(payload))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
 	defer resp.Body.Close()
-	assertStatus(t, resp, http.StatusBadRequest)
+	assertStatus(t, resp, http.StatusOK)
+
+	var body struct {
+		Model string `json:"model"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	want := os.Getenv("DEFAULT_MODEL")
+	if want == "" {
+		want = config.DefaultModel
+	}
+	if body.Model != want {
+		t.Errorf("expected default model %q, got %q", want, body.Model)
+	}
 }
 
 func TestChatCompletions_BadRequest_NoMessages(t *testing.T) {

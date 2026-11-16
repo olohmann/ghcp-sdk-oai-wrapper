@@ -74,3 +74,21 @@ func TestLoad_CustomValues(t *testing.T) {
 		t.Errorf("expected max parked 8, got %d", cfg.ToolSessionMaxParked)
 	}
 }
+
+func TestDefaultModel_Precedence(t *testing.T) {
+	t.Setenv("DEFAULT_MODEL", "")
+	if got := config.Load().DefaultModel; got != config.DefaultModel {
+		t.Errorf("expected built-in default %q, got %q", config.DefaultModel, got)
+	}
+
+	t.Setenv("DEFAULT_MODEL", "gpt-6-luna")
+	cfg := config.Load()
+	if cfg.DefaultModel != "gpt-6-luna" {
+		t.Errorf("expected env override gpt-6-luna, got %q", cfg.DefaultModel)
+	}
+
+	cfg.ApplyFlags("", "", "claude-sonnet-5")
+	if cfg.DefaultModel != "claude-sonnet-5" {
+		t.Errorf("expected flag override claude-sonnet-5, got %q", cfg.DefaultModel)
+	}
+}

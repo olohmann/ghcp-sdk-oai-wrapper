@@ -7,6 +7,9 @@ metadata:
 data:
   PORT: {{ .Values.config.port | quote }}
   LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  {{- if .Values.config.defaultModel }}
+  DEFAULT_MODEL: {{ .Values.config.defaultModel | quote }}
+  {{- end }}
   {{- if .Values.config.copilotCliPath }}
   COPILOT_CLI_PATH: {{ .Values.config.copilotCliPath | quote }}
   {{- end }}

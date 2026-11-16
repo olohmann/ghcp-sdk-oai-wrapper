@@ -23,6 +23,8 @@ config:
   port: "8080"
   logLevel: "info"
   copilotCliPath: ""
+  # Model used when a request omits one. Empty uses the server default (claude-haiku-5.5).
+  defaultModel: ""
 
 # Sensitive configuration — stored in a Kubernetes Secret.
 # Set these via --set or a values file that is NOT committed to source control.

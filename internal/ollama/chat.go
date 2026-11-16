@@ -34,6 +34,7 @@ func Chat(client *wrapper.Client, logger *slog.Logger) http.HandlerFunc {
 			return
 		}
 
+		req.Model = client.ResolveModel(req.Model)
 		if req.Model == "" {
 			WriteError(w, http.StatusBadRequest, "model is required")
 			return
@@ -73,7 +74,7 @@ func handleChatNonStreaming(ctx context.Context, w http.ResponseWriter, client *
 		WriteError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	defer session.Disconnect()
+	defer client.ReleaseSession(session)
 
 	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -124,7 +125,7 @@ func handleChatStreaming(ctx context.Context, w http.ResponseWriter, client *wra
 		WriteError(w, http.StatusInternalServerError, "failed to create session")
 		return
 	}
-	defer session.Disconnect()
+	defer client.ReleaseSession(session)
 
 	ndjson, err := NewNDJSONWriter(w)
 	if err != nil {

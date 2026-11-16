@@ -38,7 +38,7 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 	reparked := false
 	defer func() {
 		if !reparked {
-			discardSession(session, logger)
+			registry.discard(session)
 		}
 	}()
 
@@ -137,7 +137,7 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 	reparked := false
 	defer func() {
 		if !reparked {
-			discardSession(session, logger)
+			registry.discard(session)
 		}
 	}()
 

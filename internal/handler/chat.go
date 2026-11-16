@@ -40,6 +40,7 @@ func ChatCompletions(client *wrapper.Client, registry *ToolSessionRegistry, logg
 			return
 		}
 
+		req.Model = client.ResolveModel(req.Model)
 		if req.Model == "" {
 			oai.WriteError(w, http.StatusBadRequest, "model is required", "invalid_request_error")
 			return
@@ -163,7 +164,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 		oai.WriteError(w, http.StatusInternalServerError, "failed to create session", "server_error")
 		return
 	}
-	defer session.Disconnect()
+	defer client.ReleaseSession(session)
 
 	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -244,7 +245,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 		_ = sse.WriteDone()
 		return
 	}
-	defer session.Disconnect()
+	defer client.ReleaseSession(session)
 
 	completionID := oai.NewCompletionID()
 	created := oai.NowUnix()

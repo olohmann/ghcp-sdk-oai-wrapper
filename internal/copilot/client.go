@@ -4,36 +4,79 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
 )
+
+// builtinMCPServers are the MCP servers the runtime supplies itself. MCP
+// discovery does not report them, and the CLI's --disable-builtin-mcps flag
+// does not apply in SDK server mode, so they are disabled per session by name.
+var builtinMCPServers = []string{"github-mcp-server", "githubiq"}
+
+// releaseTimeout bounds the background teardown of a finished session.
+const releaseTimeout = 30 * time.Second
 
 // Client wraps the Copilot SDK client with lifecycle management.
 type Client struct {
 	inner  *copilot.Client
 	mu     sync.Mutex
 	logger *slog.Logger
+	// workDir is an empty, server-owned directory used as the working
+	// directory of the CLI runtime and every session, so the runtime never
+	// scans the server's own working directory (repo files, git state,
+	// instruction files) when building a session.
+	workDir  string
+	releases sync.WaitGroup
+	// disabledMCP lists every MCP server the runtime would otherwise start for
+	// each session (user config, plugins, built-ins). Chat sessions never
+	// expose MCP tools, so starting them only delays the first model call.
+	disabledMCP []string
+	// defaultModel is used for requests that do not name a model.
+	defaultModel string
 }
 
 // NewClient creates a new Copilot SDK client wrapper.
-func NewClient(cliPath string, githubToken string, logger *slog.Logger) *Client {
+// defaultModel is used for requests without a model and for the startup
+// warm-up; it may be empty.
+func NewClient(cliPath, githubToken, defaultModel string, logger *slog.Logger) *Client {
 	if cliPath == "" {
 		// The SDK defaults to an embedded runtime, which this server does not bundle.
 		cliPath = "copilot"
 	}
+
+	workDir, err := os.MkdirTemp("", "ghcp-sdk-oai-wrapper-")
+	if err != nil {
+		logger.Warn("failed to create isolated working directory; using process working directory", "error", err)
+		workDir = ""
+	}
+	if workDir != "" && strings.ContainsRune(cliPath, filepath.Separator) {
+		// A relative CLI path would otherwise resolve against the new working directory.
+		if abs, err := filepath.Abs(cliPath); err == nil {
+			cliPath = abs
+		}
+	}
+
 	opts := &copilot.ClientOptions{
-		LogLevel:   "error",
-		Connection: copilot.StdioConnection{Path: cliPath},
+		LogLevel:         "error",
+		Connection:       copilot.StdioConnection{Path: cliPath},
+		WorkingDirectory: workDir,
 	}
 	if githubToken != "" {
 		opts.GitHubToken = githubToken
 	}
 
 	return &Client{
-		inner:  copilot.NewClient(opts),
-		logger: logger,
+		inner:        copilot.NewClient(opts),
+		logger:       logger,
+		workDir:      workDir,
+		disabledMCP:  append([]string(nil), builtinMCPServers...),
+		defaultModel: defaultModel,
 	}
 }
 
@@ -44,13 +87,102 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("copilot client start: %w", err)
 	}
 	c.logger.Info("Copilot CLI server started")
+	c.discoverMCPServers(ctx)
+	c.warmUp(ctx)
 	return nil
 }
 
-// Stop stops the underlying Copilot CLI server.
+// warmUp creates and releases one throwaway session for an available model so
+// the runtime's one-time model initialisation (roughly a second) is not paid
+// by the first client request. No prompt is sent, so it consumes no model
+// usage. Failure is non-fatal.
+func (c *Client) warmUp(ctx context.Context) {
+	start := time.Now()
+	model := c.defaultModel
+	if model == "" {
+		models, err := c.ListModels(ctx)
+		if err != nil || len(models) == 0 {
+			c.logger.Warn("session warm-up skipped: no models available", "error", err)
+			return
+		}
+		model = models[0].ID
+	}
+	session, err := c.NewChatSession(ctx, model, "", false)
+	if err != nil {
+		c.logger.Warn("session warm-up failed", "error", err)
+		return
+	}
+	c.ReleaseSession(session)
+	c.logger.Info("session warm-up complete", "elapsed", time.Since(start).String())
+}
+
+// discoverMCPServers records the names of all MCP servers the runtime knows
+// about so sessions can disable them. Failure is non-fatal: sessions then
+// start with the runtime's default MCP servers.
+func (c *Client) discoverMCPServers(ctx context.Context) {
+	if c.inner.RPC == nil || c.inner.RPC.MCP == nil {
+		return
+	}
+	req := &rpc.MCPDiscoverRequest{}
+	if c.workDir != "" {
+		req.WorkingDirectory = &c.workDir
+	}
+	res, err := c.inner.RPC.MCP.Discover(ctx, req)
+	if err != nil {
+		c.logger.Warn("failed to discover MCP servers; sessions will start them", "error", err)
+		return
+	}
+	names := make([]string, 0, len(res.Servers))
+	for _, s := range res.Servers {
+		names = append(names, s.Name)
+	}
+	c.disabledMCP = append(c.disabledMCP, names...)
+	c.logger.Info("disabling MCP servers for chat sessions", "servers", c.disabledMCP)
+}
+
+// Stop waits for in-flight session releases, then stops the underlying
+// Copilot CLI server and removes the isolated working directory.
 func (c *Client) Stop() {
 	c.logger.Info("stopping Copilot CLI server")
+	c.releases.Wait()
 	_ = c.inner.Stop()
+	if c.workDir != "" {
+		_ = os.RemoveAll(c.workDir)
+	}
+}
+
+// ReleaseSession tears down a finished one-shot session in the background:
+// it disconnects the session and permanently deletes its persisted state.
+// Disconnect alone keeps the session on disk for later resumption, which a
+// stateless server never does, so every request would otherwise leave a
+// session directory behind. Running in the background keeps the teardown
+// RPCs off the response path.
+func (c *Client) ReleaseSession(session *copilot.Session) {
+	if session == nil {
+		return
+	}
+	c.releases.Add(1)
+	go func() {
+		defer c.releases.Done()
+		id := session.SessionID
+		if err := session.Disconnect(); err != nil {
+			c.logger.Debug("failed to disconnect session", "session_id", id, "error", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), releaseTimeout)
+		defer cancel()
+		if err := c.inner.DeleteSession(ctx, id); err != nil {
+			c.logger.Debug("failed to delete session", "session_id", id, "error", err)
+		}
+	}()
+}
+
+// ResolveModel returns model, or the configured default model when model is
+// empty. The result is empty only when neither is set.
+func (c *Client) ResolveModel(model string) string {
+	if model != "" || c == nil {
+		return model
+	}
+	return c.defaultModel
 }
 
 // ListModels returns the available models from the Copilot CLI.
@@ -83,6 +215,27 @@ func (c *Client) NewChatSessionWithTools(ctx context.Context, model, systemMessa
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		InfiniteSessions:    &copilot.InfiniteSessionConfig{Enabled: copilot.Bool(false)},
 		AvailableTools:      []string{},
+		WorkingDirectory:    c.workDir,
+
+		// One-shot chat sessions need none of the CLI's agentic context. These
+		// mirror the SDK's ModeEmpty defaults (which we cannot use because it
+		// relocates COPILOT_HOME and thereby the CLI's stored login) and cut
+		// session-creation work and prompt size.
+		EnableConfigDiscovery:              copilot.Bool(false),
+		SkipCustomInstructions:             copilot.Bool(true),
+		EnableOnDemandInstructionDiscovery: copilot.Bool(false),
+		EnableFileHooks:                    copilot.Bool(false),
+		EnableHostGitOperations:            copilot.Bool(false),
+		EnableSessionStore:                 copilot.Bool(false),
+		EnableSkills:                       copilot.Bool(false),
+		EnableExperimentalMode:             copilot.Bool(false),
+		EnableSessionTelemetry:             copilot.Bool(false),
+		SkipEmbeddingRetrieval:             copilot.Bool(true),
+		EmbeddingCacheStorage:              copilot.String("in-memory"),
+		CustomAgentsLocalOnly:              copilot.Bool(true),
+		Memory:                             &copilot.MemoryConfiguration{Enabled: false},
+		MCPOAuthTokenStorage:               "in-memory",
+		DisabledMCPServers:                 c.disabledMCP,
 	}
 	if len(tools) > 0 {
 		names := make([]string, 0, len(tools))
@@ -96,6 +249,15 @@ func (c *Client) NewChatSessionWithTools(ctx context.Context, model, systemMessa
 		cfg.SystemMessage = &copilot.SystemMessageConfig{
 			Mode:    "replace",
 			Content: systemMessage,
+		}
+	} else {
+		// Keep the default prompt but drop the host environment section
+		// (cwd, OS, git state), which is meaningless to API callers.
+		cfg.SystemMessage = &copilot.SystemMessageConfig{
+			Mode: "customize",
+			Sections: map[string]copilot.SectionOverride{
+				"environment_context": {Action: copilot.SectionActionRemove},
+			},
 		}
 	}
 	return c.inner.CreateSession(ctx, cfg)
