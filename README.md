@@ -26,12 +26,12 @@ can use GitHub Copilot models through this wrapper without modification.
 
 ## Prerequisites
 
-- **Go 1.25.12+**
-- **GitHub Copilot CLI 1.0.105** installed and authenticated
+- **Go 1.26.11+**
+- **GitHub Copilot CLI 1.0.112** installed and authenticated
   (`copilot` must be on your `PATH`, or set `COPILOT_CLI_PATH`)
 - An active **GitHub Copilot subscription**
 
-The wrapper uses Copilot SDK **v1.0.28**. The Docker image pins the matching
+The wrapper uses Copilot SDK **v1.0.34**. The Docker image pins the matching
 CLI version; source and binary installations must provide the CLI separately.
 
 ## Quick Start
@@ -65,6 +65,7 @@ specific model instead of the default `auto`.
 | `LOG_LEVEL`          | `info`     | Log level: `debug`, `info`, `warn`, `error`          |
 | `COPILOT_CLI_PATH`   | *(empty)*  | Path to `copilot` CLI binary (auto-detected if empty)|
 | `GITHUB_TOKEN`       | *(empty)*  | GitHub token with Copilot scope for headless auth    |
+| `DEFAULT_MODEL`      | `claude-haiku-5.5` | Model used when a request omits `model` (`--default-model` flag overrides) |
 
 ## Usage Examples
 
@@ -231,6 +232,7 @@ helm install copilot-proxy ./charts/ghcp-sdk-oai-wrapper \
 | `secrets.existingSecret`           | `""`        | Use pre-existing K8s Secret            |
 | `config.port`                      | `"8080"`    | HTTP listen port                       |
 | `config.logLevel`                  | `"info"`    | Log level                              |
+| `config.defaultModel`              | `""`        | Model for requests without `model` (empty = `claude-haiku-5.5`) |
 | `metrics.enabled`                  | `true`      | Expose `/metrics` endpoint             |
 | `metrics.serviceMonitor.enabled`   | `false`     | Create Prometheus Operator ServiceMonitor |
 | `autoscaling.enabled`              | `false`     | Enable HorizontalPodAutoscaler        |
@@ -283,6 +285,14 @@ Client (OpenAI-compatible)
 Each chat completion request creates a fresh Copilot session, sends the prompt,
 collects the response (or streams deltas), and tears down the session. This
 provides stateless, OpenAI-compatible semantics.
+
+Sessions are kept lightweight: they run in an empty temporary working directory,
+skip custom instructions, skills, git context and config discovery, and disable
+all MCP servers (user-configured, plugin and built-in), so the model call starts
+within tens of milliseconds. Finished sessions are deleted from the CLI's
+session store (`~/.copilot/session-state`) in the background. At startup the
+server creates one throwaway session to absorb the runtime's one-time model
+initialisation.
 
 ## Project Structure
 

@@ -57,7 +57,7 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 	parked := false
 	defer func() {
 		if !parked {
-			session.Disconnect()
+			client.ReleaseSession(session)
 		}
 	}()
 
@@ -176,7 +176,7 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 	parked := false
 	defer func() {
 		if !parked {
-			session.Disconnect()
+			client.ReleaseSession(session)
 		}
 	}()
 

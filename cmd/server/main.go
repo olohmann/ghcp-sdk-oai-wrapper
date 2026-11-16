@@ -34,13 +34,14 @@ func main() {
 	}
 
 	// Parse CLI flags.
-	var flagPort, flagMode string
+	var flagPort, flagMode, flagDefaultModel string
 	flag.StringVar(&flagPort, "port", "", "HTTP listen port (overrides PORT env var)")
 	flag.StringVar(&flagMode, "mode", "", "API mode: openai or ollama (overrides MODE env var)")
+	flag.StringVar(&flagDefaultModel, "default-model", "", "Model used when a request omits one (overrides DEFAULT_MODEL env var)")
 	flag.Parse()
 
 	cfg := config.Load()
-	cfg.ApplyFlags(flagPort, flagMode)
+	cfg.ApplyFlags(flagPort, flagMode, flagDefaultModel)
 
 	logLevel := slog.LevelInfo
 	switch cfg.LogLevel {
@@ -55,7 +56,7 @@ func main() {
 	logger.Info("ghcp-sdk-oai-wrapper", "version", version)
 
 	// Initialize Copilot SDK client
-	client := copilot.NewClient(cfg.CopilotCLIPath, cfg.GitHubToken, logger)
+	client := copilot.NewClient(cfg.CopilotCLIPath, cfg.GitHubToken, cfg.DefaultModel, logger)
 	if err := client.Start(context.Background()); err != nil {
 		logger.Error("failed to start Copilot client", "error", err)
 		os.Exit(1)
@@ -67,6 +68,7 @@ func main() {
 	mux.Handle("/metrics", promhttp.Handler())
 
 	var authExempt []string
+	var toolRegistry *handler.ToolSessionRegistry
 	switch cfg.Mode {
 	case "ollama":
 		mux.HandleFunc("/", ollama.Root(version))
@@ -77,7 +79,7 @@ func main() {
 		mux.HandleFunc("/api/version", ollama.Version(version))
 		authExempt = []string{"/", "/api/version", "/metrics"}
 	default: // "openai"
-		toolRegistry := handler.NewToolSessionRegistry(cfg.ToolSessionTTL, cfg.ToolSessionMaxParked, logger)
+		toolRegistry = handler.NewToolSessionRegistry(cfg.ToolSessionTTL, cfg.ToolSessionMaxParked, client.ReleaseSession, logger)
 		toolRegistry.StartGC(context.Background())
 		mux.HandleFunc("/healthz", handler.Health())
 		mux.HandleFunc("/v1/chat/completions", handler.ChatCompletions(client, toolRegistry, logger))
@@ -115,6 +117,9 @@ func main() {
 
 	if err := srv.Shutdown(ctx); err != nil {
 		logger.Error("server shutdown error", "error", err)
+	}
+	if toolRegistry != nil {
+		toolRegistry.Close()
 	}
 
 	logger.Info("server stopped")

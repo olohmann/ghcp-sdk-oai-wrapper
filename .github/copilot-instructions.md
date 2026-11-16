@@ -22,9 +22,10 @@ go test -tags e2e -v -run TestChatCompletions_Streaming -timeout 10m ./test/e2e/
 ./server --mode openai --port 8080   # OpenAI-compatible mode (default)
 ./server --mode ollama --port 11434  # Ollama-compatible mode
 ./server --version                   # Print version and exit
+./server --default-model gpt-6-luna  # Model used when a request omits one (default claude-haiku-5.5)
 ```
 
-CLI flags override their corresponding environment variables (`MODE`, `PORT`).
+CLI flags override their corresponding environment variables (`MODE`, `PORT`, `DEFAULT_MODEL`).
 
 ## Architecture
 
@@ -56,4 +57,4 @@ Each chat completion request creates and destroys its own `copilot.Session` — 
 - **Package isolation**: `internal/ollama` must not import `internal/oai` or `internal/handler` and vice versa. Shared logic lives in `internal/copilot` (e.g., `NewChatSession`).
 - **E2E tests are build-tag gated** with `//go:build e2e`. They spin up the real server binary and require an authenticated Copilot CLI.
 - **Unit tests** use stdlib `testing` + `httptest` only. No test frameworks.
-- **Configuration** is environment-variable-based (PORT, API_KEY, LOG_LEVEL, COPILOT_CLI_PATH, MODE). CLI flags (`--port`, `--mode`) override env vars.
+- **Configuration** is environment-variable-based (PORT, API_KEY, LOG_LEVEL, COPILOT_CLI_PATH, MODE, DEFAULT_MODEL). CLI flags (`--port`, `--mode`, `--default-model`) override env vars.

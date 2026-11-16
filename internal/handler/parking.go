@@ -34,11 +34,14 @@ type ToolSessionRegistry struct {
 	entries   map[string]*parkedSession
 	ttl       time.Duration
 	maxParked int
+	release   func(*copilot.Session)
 	logger    *slog.Logger
 }
 
 // NewToolSessionRegistry constructs a registry with the given TTL and parked-cap.
-func NewToolSessionRegistry(ttl time.Duration, maxParked int, logger *slog.Logger) *ToolSessionRegistry {
+// release tears down a discarded session (normally wrapper.Client.ReleaseSession);
+// when nil, the session is only disconnected.
+func NewToolSessionRegistry(ttl time.Duration, maxParked int, release func(*copilot.Session), logger *slog.Logger) *ToolSessionRegistry {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -52,6 +55,7 @@ func NewToolSessionRegistry(ttl time.Duration, maxParked int, logger *slog.Logge
 		entries:   make(map[string]*parkedSession),
 		ttl:       ttl,
 		maxParked: maxParked,
+		release:   release,
 		logger:    logger,
 	}
 }
@@ -74,7 +78,7 @@ func (r *ToolSessionRegistry) store(token string, session *copilot.Session, pend
 
 	if evict != nil {
 		r.logger.Warn("tool session registry full; evicting oldest parked session", "cap", r.maxParked)
-		discardSession(evict.session, r.logger)
+		r.discard(evict.session)
 	}
 }
 
@@ -90,7 +94,7 @@ func (r *ToolSessionRegistry) take(token string) (*parkedSession, bool) {
 	delete(r.entries, token)
 	if time.Since(entry.createdAt) > r.ttl {
 		// Expired: tear it down and report a miss so turn-2 gets a 409.
-		go discardSession(entry.session, r.logger)
+		go r.discard(entry.session)
 		return nil, false
 	}
 	return entry, true
@@ -140,6 +144,18 @@ func (r *ToolSessionRegistry) StartGC(ctx context.Context) {
 	}()
 }
 
+// Close tears down every parked session. Call it on shutdown so parked
+// sessions are released instead of being left in the runtime's session store.
+func (r *ToolSessionRegistry) Close() {
+	r.mu.Lock()
+	entries := r.entries
+	r.entries = make(map[string]*parkedSession)
+	r.mu.Unlock()
+	for _, e := range entries {
+		r.discard(e.session)
+	}
+}
+
 // sweep tears down all entries older than the TTL.
 func (r *ToolSessionRegistry) sweep() {
 	var expired []*parkedSession
@@ -154,23 +170,27 @@ func (r *ToolSessionRegistry) sweep() {
 
 	for _, e := range expired {
 		r.logger.Info("evicting expired parked tool session", "age", time.Since(e.createdAt).String())
-		discardSession(e.session, r.logger)
+		r.discard(e.session)
 	}
 }
 
-// discardSession aborts any in-flight run (cancelling the pending tool call) and
-// disconnects the session. Failures are non-fatal.
-func discardSession(session *copilot.Session, logger *slog.Logger) {
+// discard aborts any in-flight run (cancelling the pending tool call) and
+// releases the session. Failures are non-fatal.
+func (r *ToolSessionRegistry) discard(session *copilot.Session) {
 	if session == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := session.Abort(ctx); err != nil {
-		logger.Debug("failed to abort parked session", "error", err)
+		r.logger.Debug("failed to abort parked session", "error", err)
+	}
+	if r.release != nil {
+		r.release(session)
+		return
 	}
 	if err := session.Disconnect(); err != nil {
-		logger.Debug("failed to disconnect parked session", "error", err)
+		r.logger.Debug("failed to disconnect parked session", "error", err)
 	}
 }
 

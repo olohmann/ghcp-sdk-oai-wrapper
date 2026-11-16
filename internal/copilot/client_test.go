@@ -55,7 +55,7 @@ func TestClientStart_CLIPath(t *testing.T) {
 			if explicit {
 				cliPath = cli
 			}
-			client := NewClient(cliPath, "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+			client := NewClient(cliPath, "", "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 			defer client.Stop()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -80,7 +80,7 @@ func TestClientStart_CLIPath(t *testing.T) {
 func TestClientStart_MissingCLI(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("COPILOT_CLI_PATH", "")
-	client := NewClient("", "", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	client := NewClient("", "", "", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer client.Stop()
 	if err := client.Start(context.Background()); !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("expected a missing executable error, got %v", err)
