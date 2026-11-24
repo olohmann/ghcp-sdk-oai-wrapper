@@ -241,10 +241,11 @@ type ChatCompletionChunk struct {
 
 // ModelObject represents a model in the OpenAI models list response.
 type ModelObject struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	OwnedBy string `json:"owned_by"`
+	ID            string `json:"id"`
+	Object        string `json:"object"`
+	Created       int64  `json:"created"`
+	OwnedBy       string `json:"owned_by"`
+	ContextWindow *int   `json:"context_window,omitempty"`
 }
 
 // ModelListResponse represents the GET /v1/models response.

@@ -15,7 +15,7 @@ can use GitHub Copilot models through this wrapper without modification.
 
 - **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming modes
 - **Multimodal input** — `content` accepts the OpenAI array format with `text`, `image_url` (images), and `file` (PDFs and other documents) parts as base64 data URIs
-- **`GET /v1/models`** — lists all models available through GitHub Copilot
+- **`GET /v1/models`** — lists available models and SDK-reported context limits
 - **`GET /healthz`** — health check
 - **`GET /metrics`** — Prometheus-compatible metrics endpoint
 - Optional **Bearer-token authentication**
@@ -166,6 +166,14 @@ Attachments are forwarded to the Copilot CLI as inline base64 blobs
 curl http://localhost:8080/v1/models \
   -H "Authorization: Bearer my-secret"
 ```
+
+Each model includes an optional `context_window` field containing the total
+context limit in tokens reported by the Copilot SDK. The field is omitted when
+the SDK does not report a limit; prompt limits and vendor defaults are not used
+as substitutes. Existing OpenAI model fields are unchanged.
+
+For Raycast custom providers, use a positive `context_window` value from your
+deployed wrapper as the model's `context` in `providers.yaml`.
 
 ### Use with OpenAI Python Client
 
