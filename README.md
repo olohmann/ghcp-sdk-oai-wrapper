@@ -99,6 +99,30 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+### Reasoning Effort
+
+For models that support it, set `reasoning_effort` on chat completion requests:
+
+```json
+{
+  "model": "<model-id-from-v1-models>",
+  "reasoning_effort": "high",
+  "messages": [{"role": "user", "content": "Solve this problem carefully."}]
+}
+```
+
+Choose a level from that model's `supported_reasoning_efforts` in `/v1/models`;
+levels such as `low`, `medium`, `high`, `xhigh`, and `max` are model-dependent.
+The value is passed directly to the Copilot SDK for both streaming and
+non-streaming requests, including caller-provided tools. Omitting the field or
+setting it to `null` preserves the SDK's default without a model-catalog lookup.
+
+Empty values, unsupported levels/models, and models without advertised levels
+return HTTP 400. A failed catalog lookup returns HTTP 500. These errors are
+returned as JSON before streaming starts. During a tool round-trip, omit the
+field or repeat its original value; changing it returns HTTP 400 without
+consuming the parked session, so the caller can retry with the original setting.
+
 ### Multimodal (Image Input)
 
 Send images as base64 data URIs using the OpenAI multimodal content format:
@@ -171,6 +195,11 @@ Each model includes an optional `context_window` field containing the total
 context limit in tokens reported by the Copilot SDK. The field is omitted when
 the SDK does not report a limit; prompt limits and vendor defaults are not used
 as substitutes. Existing OpenAI model fields are unchanged.
+
+Each model also includes `supports_reasoning_effort`, taken from the SDK's
+capability flag. Optional `supported_reasoning_efforts` and
+`default_reasoning_effort` fields expose the exact SDK-reported levels and
+default; unknown values are omitted rather than inferred.
 
 For Raycast custom providers, use a positive `context_window` value from your
 deployed wrapper as the model's `context` in `providers.yaml`.

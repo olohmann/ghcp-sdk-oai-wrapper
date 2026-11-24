@@ -32,11 +32,14 @@ func Models(client modelLister, logger *slog.Logger) http.HandlerFunc {
 		data := make([]oai.ModelObject, 0, len(models))
 		for _, m := range models {
 			data = append(data, oai.ModelObject{
-				ID:            m.ID,
-				Object:        "model",
-				Created:       oai.NowUnix(),
-				OwnedBy:       "github-copilot",
-				ContextWindow: m.Capabilities.Limits.MaxContextWindowTokens,
+				ID:                        m.ID,
+				Object:                    "model",
+				Created:                   oai.NowUnix(),
+				OwnedBy:                   "github-copilot",
+				ContextWindow:             m.Capabilities.Limits.MaxContextWindowTokens,
+				SupportsReasoningEffort:   m.Capabilities.Supports.ReasoningEffort,
+				SupportedReasoningEfforts: m.SupportedReasoningEfforts,
+				DefaultReasoningEffort:    m.DefaultReasoningEffort,
 			})
 		}
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -28,10 +29,10 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 		"messages", len(req.Messages),
 	)
 
-	parked, ok := takeParkedSession(registry, req.Messages)
-	if !ok {
+	parked, err := takeParkedSession(registry, req)
+	if err != nil {
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusConflict, toolSessionExpiredMessage, "tool_session_expired")
+		writeToolSessionError(w, err)
 		return
 	}
 	session := parked.session
@@ -90,7 +91,7 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 		mu.Unlock()
 		token := newToolSessionToken()
 		calls, pending := mintToolCalls(token, evs)
-		registry.store(token, session, pending)
+		registry.store(token, session, pending, parked.reasoningEffort)
 		reparked = true
 		logger.Info("tool calls emitted; session re-parked (multi-step)", "count", len(calls), "token", token)
 		metrics.RecordCompletion(req.Model, false, "success", time.Since(start))
@@ -127,10 +128,10 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 
 	// Validate and claim the parked session first: NewSSEWriter commits a 200,
 	// after which we could no longer send a 409.
-	parked, ok := takeParkedSession(registry, req.Messages)
-	if !ok {
+	parked, err := takeParkedSession(registry, req)
+	if err != nil {
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		oai.WriteError(w, http.StatusConflict, toolSessionExpiredMessage, "tool_session_expired")
+		writeToolSessionError(w, err)
 		return
 	}
 	session := parked.session
@@ -228,7 +229,7 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 		mu.Unlock()
 		token := newToolSessionToken()
 		calls, pending := mintToolCalls(token, evs)
-		registry.store(token, session, pending)
+		registry.store(token, session, pending, parked.reasoningEffort)
 		reparked = true
 		streamToolCalls(send, completionID, created, req.Model, calls)
 		finish()
@@ -258,18 +259,28 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 // reconnected to a live parked session.
 const toolSessionExpiredMessage = "no live tool session for the supplied tool_call_id; it may have expired or this replica did not handle turn-1. Restart the tool round-trip."
 
+var errToolSessionExpired = errors.New(toolSessionExpiredMessage)
+
+func writeToolSessionError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errInvalidReasoningEffort) {
+		oai.WriteError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		return
+	}
+	oai.WriteError(w, http.StatusConflict, toolSessionExpiredMessage, "tool_session_expired")
+}
+
 // takeParkedSession decodes the parking token from a turn-2 request and removes
 // the matching live session from the registry, transferring ownership to the
-// caller. Returns false when no token decodes or no live session exists.
-func takeParkedSession(registry *ToolSessionRegistry, messages []oai.Message) (*parkedSession, bool) {
+// caller. An effort mismatch does not consume the parked session.
+func takeParkedSession(registry *ToolSessionRegistry, req *oai.ChatCompletionRequest) (*parkedSession, error) {
 	if registry == nil {
-		return nil, false
+		return nil, errToolSessionExpired
 	}
-	token, ok := tokenFromMessages(messages)
+	token, ok := tokenFromMessages(req.Messages)
 	if !ok {
-		return nil, false
+		return nil, errToolSessionExpired
 	}
-	return registry.take(token)
+	return registry.take(token, req.ReasoningEffort)
 }
 
 // resolvePending delivers the client-supplied result for each pending tool call

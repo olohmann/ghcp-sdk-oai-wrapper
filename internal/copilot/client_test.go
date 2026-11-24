@@ -11,6 +11,8 @@ import (
 	"runtime"
 	"testing"
 	"time"
+
+	sdk "github.com/github/copilot-sdk/go"
 )
 
 func TestMain(m *testing.M) {
@@ -84,5 +86,37 @@ func TestClientStart_MissingCLI(t *testing.T) {
 	defer client.Stop()
 	if err := client.Start(context.Background()); !errors.Is(err, exec.ErrNotFound) {
 		t.Fatalf("expected a missing executable error, got %v", err)
+	}
+}
+
+func TestChatSessionConfig_ReasoningEffort(t *testing.T) {
+	client := &Client{workDir: t.TempDir()}
+	tests := []struct {
+		name      string
+		effort    string
+		streaming bool
+		tools     []sdk.Tool
+	}{
+		{name: "default"},
+		{name: "explicit with streaming tools", effort: "high", streaming: true, tools: []sdk.Tool{{Name: "lookup"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := client.chatSessionConfig("test-model", "system", tt.streaming, tt.tools, tt.effort)
+			if cfg.ReasoningEffort != tt.effort {
+				t.Errorf("SDK effort = %q, want %q", cfg.ReasoningEffort, tt.effort)
+			}
+			if cfg.Streaming == nil || *cfg.Streaming != tt.streaming {
+				t.Errorf("streaming not preserved: %v", cfg.Streaming)
+			}
+			if len(cfg.Tools) != len(tt.tools) || len(cfg.AvailableTools) != len(tt.tools) {
+				t.Fatalf("caller tools not preserved: %+v", cfg)
+			}
+			for i, tool := range tt.tools {
+				if cfg.Tools[i].Name != tool.Name || cfg.AvailableTools[i] != tool.Name {
+					t.Errorf("caller tool %q not available", tool.Name)
+				}
+			}
+		})
 	}
 }

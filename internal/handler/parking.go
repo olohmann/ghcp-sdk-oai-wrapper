@@ -20,9 +20,10 @@ import (
 // tool_call ID to the SDK RequestID needed to resolve that exact pending call
 // on turn-2.
 type parkedSession struct {
-	session   *copilot.Session
-	pending   map[string]string // emitted tool_call ID -> SDK RequestID
-	createdAt time.Time
+	session         *copilot.Session
+	pending         map[string]string // emitted tool_call ID -> SDK RequestID
+	createdAt       time.Time
+	reasoningEffort string
 }
 
 // ToolSessionRegistry holds parked tool sessions keyed by an opaque token that
@@ -63,16 +64,17 @@ func NewToolSessionRegistry(ttl time.Duration, maxParked int, release func(*copi
 // store parks a live session under the given token, taking ownership of the
 // session's lifetime. When the parked-cap is exceeded the oldest entry is
 // evicted and torn down.
-func (r *ToolSessionRegistry) store(token string, session *copilot.Session, pending map[string]string) {
+func (r *ToolSessionRegistry) store(token string, session *copilot.Session, pending map[string]string, reasoningEffort string) {
 	r.mu.Lock()
 	var evict *parkedSession
 	if _, exists := r.entries[token]; !exists && len(r.entries) >= r.maxParked {
 		evict = r.evictOldestLocked()
 	}
 	r.entries[token] = &parkedSession{
-		session:   session,
-		pending:   pending,
-		createdAt: time.Now(),
+		session:         session,
+		pending:         pending,
+		createdAt:       time.Now(),
+		reasoningEffort: reasoningEffort,
 	}
 	r.mu.Unlock()
 
@@ -83,21 +85,25 @@ func (r *ToolSessionRegistry) store(token string, session *copilot.Session, pend
 }
 
 // take removes and returns the parked session for a token, transferring
-// ownership to the caller. The boolean is false when no live session exists.
-func (r *ToolSessionRegistry) take(token string) (*parkedSession, bool) {
+// ownership to the caller. An effort mismatch leaves the session available.
+func (r *ToolSessionRegistry) take(token string, reasoningEffort *string) (*parkedSession, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.entries[token]
 	if !ok {
-		return nil, false
+		return nil, errToolSessionExpired
 	}
-	delete(r.entries, token)
 	if time.Since(entry.createdAt) > r.ttl {
+		delete(r.entries, token)
 		// Expired: tear it down and report a miss so turn-2 gets a 409.
 		go r.discard(entry.session)
-		return nil, false
+		return nil, errToolSessionExpired
 	}
-	return entry, true
+	if reasoningEffort != nil && (*reasoningEffort == "" || *reasoningEffort != entry.reasoningEffort) {
+		return nil, fmt.Errorf("%w: cannot change during a tool round-trip; omit it or repeat the original value", errInvalidReasoningEffort)
+	}
+	delete(r.entries, token)
+	return entry, nil
 }
 
 // len reports the number of currently parked sessions (used by tests).

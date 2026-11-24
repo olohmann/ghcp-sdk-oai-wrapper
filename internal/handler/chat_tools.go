@@ -10,7 +10,6 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
-	wrapper "github.com/olohmann/ghcp-sdk-oai-wrapper/internal/copilot"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/oai"
 )
@@ -24,7 +23,7 @@ const toolEmitDebounce = 300 * time.Millisecond
 // SDK tools, sends the prompt, and intercepts the pending tool requests the
 // model emits. If the model calls tools, it returns finish_reason:"tool_calls";
 // if it answers directly, it returns the text with finish_reason:"stop".
-func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper.Client, registry *ToolSessionRegistry, req *oai.ChatCompletionRequest, logger *slog.Logger) {
+func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, client chatClient, registry *ToolSessionRegistry, req *oai.ChatCompletionRequest, logger *slog.Logger) {
 	start := time.Now()
 	logger.Info("chat completion request",
 		"model", req.Model,
@@ -107,7 +106,7 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 		mu.Unlock()
 		token := newToolSessionToken()
 		calls, pending := mintToolCalls(token, evs)
-		registry.store(token, session, pending)
+		registry.store(token, session, pending, requestedReasoningEffort(req))
 		parked = true // ownership transferred to the registry; skip Disconnect
 		logger.Info("tool calls emitted; session parked", "count", len(calls), "token", token)
 		metrics.RecordCompletion(req.Model, false, "success", time.Since(start))
@@ -135,7 +134,7 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 // handleToolEmitNonStreaming. Text answers stream as content deltas; tool calls
 // stream as tool_calls deltas followed by a final chunk with
 // finish_reason:"tool_calls".
-func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper.Client, registry *ToolSessionRegistry, req *oai.ChatCompletionRequest, logger *slog.Logger) {
+func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client chatClient, registry *ToolSessionRegistry, req *oai.ChatCompletionRequest, logger *slog.Logger) {
 	start := time.Now()
 	logger.Info("chat completion request",
 		"model", req.Model,
@@ -259,7 +258,7 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 		mu.Unlock()
 		token := newToolSessionToken()
 		calls, pending := mintToolCalls(token, evs)
-		registry.store(token, session, pending)
+		registry.store(token, session, pending, requestedReasoningEffort(req))
 		parked = true // ownership transferred to the registry; skip Disconnect
 		streamToolCalls(send, completionID, created, req.Model, calls)
 		finish()

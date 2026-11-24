@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	copilot "github.com/github/copilot-sdk/go"
@@ -12,6 +13,79 @@ import (
 
 type modelListClient struct {
 	models []copilot.ModelInfo
+}
+
+func TestModels_ReasoningEffort(t *testing.T) {
+	tests := []struct {
+		name          string
+		supported     bool
+		levels        []string
+		defaultEffort string
+	}{
+		{name: "supported", supported: true, levels: []string{"low", "high", "max"}, defaultEffort: "high"},
+		{name: "unsupported"},
+		{name: "unknown levels", supported: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := modelListClient{models: []copilot.ModelInfo{{
+				ID: "test-model",
+				Capabilities: copilot.ModelCapabilities{
+					Supports: copilot.ModelSupports{ReasoningEffort: tt.supported},
+				},
+				SupportedReasoningEfforts: tt.levels,
+				DefaultReasoningEffort:    tt.defaultEffort,
+			}}}
+			rec := httptest.NewRecorder()
+			Models(client, silentLogger()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Data []map[string]json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if len(body.Data) != 1 {
+				t.Fatalf("expected one model, got %d", len(body.Data))
+			}
+			model := body.Data[0]
+			var supported bool
+			if err := json.Unmarshal(model["supports_reasoning_effort"], &supported); err != nil {
+				t.Fatal(err)
+			}
+			if supported != tt.supported {
+				t.Errorf("supports_reasoning_effort = %v, want %v", supported, tt.supported)
+			}
+			if raw, present := model["supported_reasoning_efforts"]; tt.levels == nil {
+				if present {
+					t.Errorf("unknown levels should be omitted, got %s", raw)
+				}
+			} else {
+				var levels []string
+				if err := json.Unmarshal(raw, &levels); err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(levels, tt.levels) {
+					t.Errorf("levels = %v, want %v", levels, tt.levels)
+				}
+			}
+			if raw, present := model["default_reasoning_effort"]; tt.defaultEffort == "" {
+				if present {
+					t.Errorf("unknown default should be omitted, got %s", raw)
+				}
+			} else {
+				var effort string
+				if err := json.Unmarshal(raw, &effort); err != nil {
+					t.Fatal(err)
+				}
+				if effort != tt.defaultEffort {
+					t.Errorf("default = %q, want %q", effort, tt.defaultEffort)
+				}
+			}
+		})
+	}
 }
 
 func (c modelListClient) ListModels(context.Context) ([]copilot.ModelInfo, error) {

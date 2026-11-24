@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -15,18 +16,24 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 
-	wrapper "github.com/olohmann/ghcp-sdk-oai-wrapper/internal/copilot"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/oai"
 )
 
 const maxRequestBodySize = 50 * 1024 * 1024 // 50 MB
 
+type chatClient interface {
+	modelLister
+	ResolveModel(string) string
+	NewChatSessionWithTools(context.Context, string, string, bool, []copilot.Tool, string) (*copilot.Session, error)
+	ReleaseSession(*copilot.Session)
+}
+
 // ChatCompletions returns the handler for POST /v1/chat/completions. The
 // registry holds parked tool sessions for faithful OpenAI tool round-trips; it
 // may be nil when tool-calling is not needed (e.g. in tests exercising the
 // method guard).
-func ChatCompletions(client *wrapper.Client, registry *ToolSessionRegistry, logger *slog.Logger) http.HandlerFunc {
+func ChatCompletions(client chatClient, registry *ToolSessionRegistry, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			oai.WriteError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
@@ -66,6 +73,16 @@ func ChatCompletions(client *wrapper.Client, registry *ToolSessionRegistry, logg
 				handleToolResumeStreaming(r.Context(), w, registry, &req, reqLogger)
 			} else {
 				handleToolResumeNonStreaming(r.Context(), w, registry, &req, reqLogger)
+			}
+			return
+		}
+
+		if err := validateReasoningEffort(r.Context(), client, &req); err != nil {
+			if errors.Is(err, errInvalidReasoningEffort) {
+				oai.WriteError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+			} else {
+				reqLogger.Error("failed to validate reasoning effort", "model", req.Model, "error", err)
+				oai.WriteError(w, http.StatusInternalServerError, "failed to validate reasoning effort", "server_error")
 			}
 			return
 		}
@@ -138,7 +155,7 @@ func extractSystemMessage(messages []oai.Message) string {
 	return strings.Join(parts, "\n")
 }
 
-func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper.Client, req *oai.ChatCompletionRequest, logger *slog.Logger) {
+func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client chatClient, req *oai.ChatCompletionRequest, logger *slog.Logger) {
 	start := time.Now()
 	logger.Info("chat completion request",
 		"model", req.Model,
@@ -209,7 +226,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client *wrap
 	oai.WriteJSON(w, http.StatusOK, resp)
 }
 
-func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper.Client, req *oai.ChatCompletionRequest, logger *slog.Logger) {
+func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClient, req *oai.ChatCompletionRequest, logger *slog.Logger) {
 	start := time.Now()
 	logger.Info("chat completion request",
 		"model", req.Model,
@@ -369,9 +386,9 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client *wrapper
 	}
 }
 
-func createSession(ctx context.Context, client *wrapper.Client, req *oai.ChatCompletionRequest, streaming bool, tools []copilot.Tool) (*copilot.Session, error) {
+func createSession(ctx context.Context, client chatClient, req *oai.ChatCompletionRequest, streaming bool, tools []copilot.Tool) (*copilot.Session, error) {
 	sysMsg := extractSystemMessage(req.Messages)
-	return client.NewChatSessionWithTools(ctx, req.Model, sysMsg, streaming, tools)
+	return client.NewChatSessionWithTools(ctx, req.Model, sysMsg, streaming, tools, requestedReasoningEffort(req))
 }
 
 // extractAttachments scans all messages for `image_url` and `file` content

@@ -11,6 +11,7 @@ type ChatCompletionRequest struct {
 	Model            string         `json:"model"`
 	Messages         []Message      `json:"messages"`
 	Temperature      *float64       `json:"temperature,omitempty"`
+	ReasoningEffort  *string        `json:"reasoning_effort,omitempty"`
 	TopP             *float64       `json:"top_p,omitempty"`
 	N                *int           `json:"n,omitempty"`
 	Stream           bool           `json:"stream,omitempty"`
@@ -241,11 +242,14 @@ type ChatCompletionChunk struct {
 
 // ModelObject represents a model in the OpenAI models list response.
 type ModelObject struct {
-	ID            string `json:"id"`
-	Object        string `json:"object"`
-	Created       int64  `json:"created"`
-	OwnedBy       string `json:"owned_by"`
-	ContextWindow *int   `json:"context_window,omitempty"`
+	ID                        string   `json:"id"`
+	Object                    string   `json:"object"`
+	Created                   int64    `json:"created"`
+	OwnedBy                   string   `json:"owned_by"`
+	ContextWindow             *int     `json:"context_window,omitempty"`
+	SupportsReasoningEffort   bool     `json:"supports_reasoning_effort"`
+	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
+	DefaultReasoningEffort    string   `json:"default_reasoning_effort,omitempty"`
 }
 
 // ModelListResponse represents the GET /v1/models response.

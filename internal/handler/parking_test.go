@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -51,13 +52,13 @@ func TestRegistry_StoreTake(t *testing.T) {
 	r := NewToolSessionRegistry(time.Minute, 10, nil, nil)
 	pending := map[string]string{"call_x_0": "req-1"}
 	// Store with a nil session; take does not touch the session on the happy path.
-	r.store("tok1", nil, pending)
+	r.store("tok1", nil, pending, "")
 	if r.len() != 1 {
 		t.Fatalf("expected 1 parked, got %d", r.len())
 	}
-	entry, ok := r.take("tok1")
-	if !ok {
-		t.Fatal("expected take to succeed")
+	entry, err := r.take("tok1", nil)
+	if err != nil {
+		t.Fatalf("expected take to succeed: %v", err)
 	}
 	if entry.pending["call_x_0"] != "req-1" {
 		t.Errorf("pending not preserved: %+v", entry.pending)
@@ -66,20 +67,20 @@ func TestRegistry_StoreTake(t *testing.T) {
 		t.Errorf("take should remove the entry, len=%d", r.len())
 	}
 	// Second take is a miss.
-	if _, ok := r.take("tok1"); ok {
+	if _, err := r.take("tok1", nil); !errors.Is(err, errToolSessionExpired) {
 		t.Error("expected second take to miss")
 	}
 	// Unknown token is a miss.
-	if _, ok := r.take("nope"); ok {
+	if _, err := r.take("nope", nil); !errors.Is(err, errToolSessionExpired) {
 		t.Error("expected unknown token to miss")
 	}
 }
 
 func TestRegistry_TakeExpired(t *testing.T) {
 	r := NewToolSessionRegistry(time.Millisecond, 10, nil, nil)
-	r.store("tok", nil, nil)
+	r.store("tok", nil, nil, "")
 	time.Sleep(5 * time.Millisecond)
-	if _, ok := r.take("tok"); ok {
+	if _, err := r.take("tok", nil); !errors.Is(err, errToolSessionExpired) {
 		t.Error("expected expired entry to miss")
 	}
 	if r.len() != 0 {
@@ -89,33 +90,71 @@ func TestRegistry_TakeExpired(t *testing.T) {
 
 func TestRegistry_EvictOldestOnCap(t *testing.T) {
 	r := NewToolSessionRegistry(time.Minute, 2, nil, nil)
-	r.store("a", nil, nil)
+	r.store("a", nil, nil, "")
 	time.Sleep(2 * time.Millisecond)
-	r.store("b", nil, nil)
+	r.store("b", nil, nil, "")
 	time.Sleep(2 * time.Millisecond)
 	// Exceed cap: "a" (oldest) must be evicted.
-	r.store("c", nil, nil)
+	r.store("c", nil, nil, "")
 	if r.len() != 2 {
 		t.Fatalf("expected cap enforced at 2, got %d", r.len())
 	}
-	if _, ok := r.take("a"); ok {
+	if _, err := r.take("a", nil); !errors.Is(err, errToolSessionExpired) {
 		t.Error("expected oldest entry 'a' to be evicted")
 	}
-	if _, ok := r.take("b"); !ok {
+	if _, err := r.take("b", nil); err != nil {
 		t.Error("expected 'b' to remain")
 	}
-	if _, ok := r.take("c"); !ok {
+	if _, err := r.take("c", nil); err != nil {
 		t.Error("expected 'c' to remain")
 	}
 }
 
 func TestRegistry_ReStoreSameTokenNoEvict(t *testing.T) {
 	r := NewToolSessionRegistry(time.Minute, 1, nil, nil)
-	r.store("a", nil, nil)
+	r.store("a", nil, nil, "")
 	// Re-store the same token; should not evict (replaces in place).
-	r.store("a", nil, nil)
+	r.store("a", nil, nil, "")
 	if r.len() != 1 {
 		t.Fatalf("expected 1, got %d", r.len())
+	}
+}
+
+func TestRegistry_ReasoningEffort(t *testing.T) {
+	high, low, empty := "high", "low", ""
+	tests := []struct {
+		name      string
+		original  string
+		requested *string
+		wantError bool
+	}{
+		{name: "omitted", original: high},
+		{name: "unchanged", original: high, requested: &high},
+		{name: "changed", original: high, requested: &low, wantError: true},
+		{name: "empty", original: high, requested: &empty, wantError: true},
+		{name: "override default", requested: &high, wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewToolSessionRegistry(time.Minute, 10, nil, silentLogger())
+			r.store("tok", nil, nil, tt.original)
+			entry, err := r.take("tok", tt.requested)
+			if tt.wantError {
+				if !errors.Is(err, errInvalidReasoningEffort) {
+					t.Fatalf("expected invalid effort, got %v", err)
+				}
+				if r.len() != 1 {
+					t.Fatal("rejected effort consumed the parked session")
+				}
+				entry, err = r.take("tok", nil)
+			}
+			if err != nil {
+				t.Fatalf("expected original session to remain usable: %v", err)
+			}
+			if entry.reasoningEffort != tt.original {
+				t.Errorf("effort = %q, want %q", entry.reasoningEffort, tt.original)
+			}
+		})
 	}
 }
 

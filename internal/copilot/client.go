@@ -201,16 +201,22 @@ func (c *Client) CreateSession(ctx context.Context, cfg *copilot.SessionConfig) 
 // This is a convenience method that both OpenAI and Ollama handlers can use
 // without depending on each other's types.
 func (c *Client) NewChatSession(ctx context.Context, model, systemMessage string, streaming bool) (*copilot.Session, error) {
-	return c.NewChatSessionWithTools(ctx, model, systemMessage, streaming, nil)
+	return c.NewChatSessionWithTools(ctx, model, systemMessage, streaming, nil, "")
 }
 
 // NewChatSessionWithTools is like NewChatSession but also exposes caller-defined
 // tools to the model. When tools is non-empty, only those tools are made
 // available (built-in agentic tools stay disabled); when it is empty the
-// behavior is identical to NewChatSession.
-func (c *Client) NewChatSessionWithTools(ctx context.Context, model, systemMessage string, streaming bool, tools []copilot.Tool) (*copilot.Session, error) {
+// behavior is identical to NewChatSession. Empty reasoningEffort keeps the
+// model's default.
+func (c *Client) NewChatSessionWithTools(ctx context.Context, model, systemMessage string, streaming bool, tools []copilot.Tool, reasoningEffort string) (*copilot.Session, error) {
+	return c.inner.CreateSession(ctx, c.chatSessionConfig(model, systemMessage, streaming, tools, reasoningEffort))
+}
+
+func (c *Client) chatSessionConfig(model, systemMessage string, streaming bool, tools []copilot.Tool, reasoningEffort string) *copilot.SessionConfig {
 	cfg := &copilot.SessionConfig{
 		Model:               model,
+		ReasoningEffort:     reasoningEffort,
 		Streaming:           copilot.Bool(streaming),
 		OnPermissionRequest: copilot.PermissionHandler.ApproveAll,
 		InfiniteSessions:    &copilot.InfiniteSessionConfig{Enabled: copilot.Bool(false)},
@@ -260,7 +266,7 @@ func (c *Client) NewChatSessionWithTools(ctx context.Context, model, systemMessa
 			},
 		}
 	}
-	return c.inner.CreateSession(ctx, cfg)
+	return cfg
 }
 
 // ResolvePendingTool delivers a result for a pending external tool call on a
