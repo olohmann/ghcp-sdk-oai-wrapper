@@ -92,6 +92,48 @@ func (c modelListClient) ListModels(context.Context) ([]copilot.ModelInfo, error
 	return c.models, nil
 }
 
+func TestModels_Vision(t *testing.T) {
+	for _, supported := range []bool{false, true} {
+		name := "unsupported"
+		if supported {
+			name = "supported"
+		}
+		t.Run(name, func(t *testing.T) {
+			client := modelListClient{models: []copilot.ModelInfo{{
+				ID: "test-model",
+				Capabilities: copilot.ModelCapabilities{
+					Supports: copilot.ModelSupports{Vision: supported},
+				},
+			}}}
+			rec := httptest.NewRecorder()
+			Models(client, silentLogger()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+			}
+			var body struct {
+				Data []map[string]json.RawMessage `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if len(body.Data) != 1 {
+				t.Fatalf("expected one model, got %d", len(body.Data))
+			}
+			raw, present := body.Data[0]["supports_vision"]
+			if !present {
+				t.Fatal("supports_vision must be present even when false")
+			}
+			var got bool
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != supported {
+				t.Errorf("supports_vision = %v, want %v", got, supported)
+			}
+		})
+	}
+}
+
 func TestModels_ContextWindow(t *testing.T) {
 	contextWindow := 262144
 	promptLimit := 240000

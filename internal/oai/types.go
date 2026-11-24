@@ -247,6 +247,7 @@ type ModelObject struct {
 	Created                   int64    `json:"created"`
 	OwnedBy                   string   `json:"owned_by"`
 	ContextWindow             *int     `json:"context_window,omitempty"`
+	SupportsVision            bool     `json:"supports_vision"`
 	SupportsReasoningEffort   bool     `json:"supports_reasoning_effort"`
 	SupportedReasoningEfforts []string `json:"supported_reasoning_efforts,omitempty"`
 	DefaultReasoningEffort    string   `json:"default_reasoning_effort,omitempty"`

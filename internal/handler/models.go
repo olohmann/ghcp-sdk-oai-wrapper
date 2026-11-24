@@ -37,6 +37,7 @@ func Models(client modelLister, logger *slog.Logger) http.HandlerFunc {
 				Created:                   oai.NowUnix(),
 				OwnedBy:                   "github-copilot",
 				ContextWindow:             m.Capabilities.Limits.MaxContextWindowTokens,
+				SupportsVision:            m.Capabilities.Supports.Vision,
 				SupportsReasoningEffort:   m.Capabilities.Supports.ReasoningEffort,
 				SupportedReasoningEfforts: m.SupportedReasoningEfforts,
 				DefaultReasoningEffort:    m.DefaultReasoningEffort,

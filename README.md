@@ -142,7 +142,10 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-Supported image formats: any `image/*` MIME the Copilot model accepts (PNG, JPEG, GIF, WebP, etc.). The MIME type is taken from the `data:` URI and passed through to the SDK unchanged — no fixed allow-list.
+Use a model with `supports_vision: true` in `/v1/models`. Supported image formats:
+any `image/*` MIME the Copilot model accepts (PNG, JPEG, GIF, WebP, etc.). The MIME
+type is taken from the `data:` URI and passed through to the SDK unchanged — no
+fixed allow-list.
 
 > **Note:** Only `data:` URIs (inline base64) are supported. External `https://` image URLs are not forwarded to the model. `image_url` parts must use an `image/*` MIME type — non-image documents like PDFs go through the `file` content part below.
 
@@ -196,6 +199,10 @@ context limit in tokens reported by the Copilot SDK. The field is omitted when
 the SDK does not report a limit; prompt limits and vendor defaults are not used
 as substitutes. Existing OpenAI model fields are unchanged.
 
+Each model includes `supports_vision`, taken directly from the SDK's vision
+capability flag. The boolean is present even when false; model names and vendor
+defaults are not used to infer image support.
+
 Each model also includes `supports_reasoning_effort`, taken from the SDK's
 capability flag. Optional `supported_reasoning_efforts` and
 `default_reasoning_effort` fields expose the exact SDK-reported levels and
@@ -203,6 +210,21 @@ default; unknown values are omitted rather than inferred.
 
 For Raycast custom providers, use a positive `context_window` value from your
 deployed wrapper as the model's `context` in `providers.yaml`.
+
+Image attachments in Raycast require `abilities.vision.supported: true` for the
+selected custom model. Set this only when that model's deployed `supports_vision`
+is true; leave it disabled when false or when the field is missing. For example,
+inside a confirmed vision model's entry:
+
+```yaml
+abilities:
+  vision:
+    supported: true
+```
+
+Keep the model's other abilities unchanged. Raycast watches `providers.yaml` for
+changes, so no restart is normally needed. This enables image input, not image
+generation.
 
 ### Use with OpenAI Python Client
 
