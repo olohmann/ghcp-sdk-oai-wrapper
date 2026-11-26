@@ -275,18 +275,20 @@ func resultsByToolCallID(messages []oai.Message) map[string]string {
 	return out
 }
 
-// tokenFromMessages recovers the parking token from the echoed tool_call IDs in
-// a turn-2 request, preferring role:"tool" results and falling back to the
-// assistant's tool_calls. Returns false when no ID decodes to a token.
+// tokenFromMessages examines only the current trailing tool round. Earlier
+// tokens have already been consumed, even when the client echoes full history.
 func tokenFromMessages(messages []oai.Message) (string, bool) {
-	for _, m := range messages {
-		if m.Role == "tool" {
-			if token, ok := decodeToolSessionToken(m.ToolCallID); ok {
-				return token, true
-			}
+	start := len(messages)
+	for start > 0 && messages[start-1].Role == "tool" {
+		start--
+	}
+	for i := len(messages) - 1; i >= start; i-- {
+		if token, ok := decodeToolSessionToken(messages[i].ToolCallID); ok {
+			return token, true
 		}
 	}
-	for _, m := range messages {
+	if start > 0 {
+		m := messages[start-1]
 		if m.Role == "assistant" {
 			for _, tc := range m.ToolCalls {
 				if token, ok := decodeToolSessionToken(tc.ID); ok {

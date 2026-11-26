@@ -63,12 +63,12 @@ func ChatCompletions(client chatClient, registry *ToolSessionRegistry, logger *s
 			"user_agent", r.UserAgent(),
 		)
 
-		// Turn-2 tool resume: the request declares tools AND already carries tool
-		// results, so it echoes back the tool_call IDs we minted on turn-1. We
+		// Tool resume: trailing results echo the tool_call IDs minted in the
+		// latest round. Tool declarations need not be repeated on resume. We
 		// decode the parking token, resolve the pending call(s) on the same live
 		// session, and continue the original agent loop to its answer. A missing
 		// or expired parked session yields HTTP 409 (there is no replay fallback).
-		if requestHasTools(&req) && hasToolResults(req.Messages) {
+		if hasToolResults(req.Messages) {
 			if req.Stream {
 				handleToolResumeStreaming(r.Context(), w, registry, &req, reqLogger)
 			} else {
@@ -87,11 +87,11 @@ func ChatCompletions(client chatClient, registry *ToolSessionRegistry, logger *s
 			return
 		}
 
-		// Turn-1 tool emission: the request declares tools but carries no tool
-		// results yet, so the model may respond with tool_calls. This path
+		// New-turn tool emission: any historical results belong to completed
+		// rounds, so the model may respond with fresh tool_calls. This path
 		// registers declaration-only tools, intercepts the SDK's pending tool
 		// requests, and parks the live session for the follow-up turn.
-		if requestHasTools(&req) && !hasToolResults(req.Messages) {
+		if requestHasTools(&req) {
 			if req.Stream {
 				handleToolEmitStreaming(r.Context(), w, client, registry, &req, reqLogger)
 			} else {

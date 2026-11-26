@@ -99,6 +99,23 @@ curl http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+### Tool Calling
+
+Declare caller-provided functions in the OpenAI `tools` field. When the model
+requests a tool, the wrapper returns structured `tool_calls` with
+`finish_reason: "tool_calls"`. Execute the tool in the caller and send its
+result back as a `role: "tool"` message with the matching `tool_call_id`.
+
+Continuation requests must end with the current round's tool-result messages.
+Full conversation history can be retained: only the latest tool round selects
+the parked session, and a new user message starts a new session. Tool
+declarations do not need to be repeated when returning results.
+
+Parked sessions are held in memory by the server instance that emitted the
+call. Continuations must reach that instance; expired sessions, server restarts,
+and requests reaching another replica still return HTTP 409. This does not
+replay or re-execute tools automatically.
+
 ### Reasoning Effort
 
 For models that support it, set `reasoning_effort` on chat completion requests:

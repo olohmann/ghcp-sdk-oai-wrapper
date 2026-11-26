@@ -13,15 +13,10 @@ func requestHasTools(req *oai.ChatCompletionRequest) bool {
 	return len(req.Tools) > 0
 }
 
-// hasToolResults reports whether the message history already contains tool
-// results (role:"tool"), which signals a turn-2 continuation request.
+// hasToolResults reports whether the request ends with current tool results.
+// Results from completed turns must not resume a consumed session.
 func hasToolResults(messages []oai.Message) bool {
-	for _, m := range messages {
-		if m.Role == "tool" {
-			return true
-		}
-	}
-	return false
+	return len(messages) > 0 && messages[len(messages)-1].Role == "tool"
 }
 
 // toolsToSDK translates OpenAI tool declarations into declaration-only Copilot

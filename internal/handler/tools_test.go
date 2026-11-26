@@ -28,6 +28,14 @@ func TestHasToolResults(t *testing.T) {
 	if !hasToolResults(msgs) {
 		t.Error("expected true with tool role")
 	}
+	msgs = append(msgs, oai.Message{Role: "assistant", Content: oai.NewTextContent("answer")})
+	if hasToolResults(msgs) {
+		t.Error("completed tool results must not count as a current continuation")
+	}
+	msgs = append(msgs, oai.Message{Role: "user", Content: oai.NewTextContent("new question")})
+	if hasToolResults(msgs) {
+		t.Error("historical tool results must not resume on a new user turn")
+	}
 }
 
 func TestToolsToSDK(t *testing.T) {
