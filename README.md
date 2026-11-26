@@ -111,6 +111,13 @@ Full conversation history can be retained: only the latest tool round selects
 the parked session, and a new user message starts a new session. Tool
 declarations do not need to be repeated when returning results.
 
+If a continuation supplies `tools`, that list replaces the live session's
+caller-provided tools before results are delivered to the model. This supports
+clients that discover and attach new tools during a turn. Omitted or `null`
+tools preserve the current set; an explicit `[]` removes it. Runtime built-in
+and MCP tools stay disabled. Failed tool updates return HTTP 500 before SSE
+starts, without resolving pending calls or replaying tool actions.
+
 Parked sessions are held in memory by the server instance that emitted the
 call. Continuations must reach that instance; expired sessions, server restarts,
 and requests reaching another replica still return HTTP 409. This does not

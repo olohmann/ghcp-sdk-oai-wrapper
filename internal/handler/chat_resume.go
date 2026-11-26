@@ -43,6 +43,13 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 		}
 	}()
 
+	if err := updateToolDeclarations(ctx, session, req); err != nil {
+		logger.Error("failed to update session tools", "error", err)
+		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
+		oai.WriteError(w, http.StatusInternalServerError, "failed to update session tools", "server_error")
+		return
+	}
+
 	var mu sync.Mutex
 	var events []*copilot.ExternalToolRequestedData
 	var finalText string
@@ -141,6 +148,13 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 			registry.discard(session)
 		}
 	}()
+
+	if err := updateToolDeclarations(ctx, session, req); err != nil {
+		logger.Error("failed to update session tools", "error", err)
+		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
+		oai.WriteError(w, http.StatusInternalServerError, "failed to update session tools", "server_error")
+		return
+	}
 
 	sse, err := oai.NewSSEWriter(w)
 	if err != nil {
@@ -281,6 +295,14 @@ func takeParkedSession(registry *ToolSessionRegistry, req *oai.ChatCompletionReq
 		return nil, errToolSessionExpired
 	}
 	return registry.take(token, req.ReasoningEffort)
+}
+
+func updateToolDeclarations(ctx context.Context, session *copilot.Session, req *oai.ChatCompletionRequest) error {
+	// Omission/null preserves the current tools; an explicit [] removes them.
+	if req.Tools == nil {
+		return nil
+	}
+	return wrapper.UpdateSessionTools(ctx, session, toolsToSDK(req.Tools))
 }
 
 // resolvePending delivers the client-supplied result for each pending tool call

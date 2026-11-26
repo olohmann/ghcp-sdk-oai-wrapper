@@ -269,6 +269,32 @@ func (c *Client) chatSessionConfig(model, systemMessage string, streaming bool, 
 	return cfg
 }
 
+// UpdateSessionTools replaces caller-provided tools and their allowlist before
+// a parked agent loop resumes. Runtime built-in and MCP tools remain disabled.
+func UpdateSessionTools(ctx context.Context, session *copilot.Session, tools []copilot.Tool) error {
+	if session == nil {
+		return fmt.Errorf("update session tools: nil session")
+	}
+	if session.RPC == nil || session.RPC.Options == nil {
+		return fmt.Errorf("update session tools: session RPC unavailable")
+	}
+	if err := session.SetTools(ctx, tools); err != nil {
+		return fmt.Errorf("update session tools: %w", err)
+	}
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	result, err := session.RPC.Options.Update(ctx, &rpc.SessionUpdateOptionsParams{AvailableTools: names})
+	if err != nil {
+		return fmt.Errorf("update session tool allowlist: %w", err)
+	}
+	if !result.Success {
+		return fmt.Errorf("update session tool allowlist: runtime rejected update")
+	}
+	return nil
+}
+
 // ResolvePendingTool delivers a result for a pending external tool call on a
 // live session. A declaration-only tool (nil handler) leaves the model's call
 // pending — surfaced as a *copilot.ExternalToolRequestedData carrying a
