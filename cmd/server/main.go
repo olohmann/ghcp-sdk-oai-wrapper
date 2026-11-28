@@ -27,9 +27,16 @@ import (
 var version = "dev"
 
 func main() {
-	// Handle --version before flag parsing (exits immediately).
+	// Handle --version and --healthcheck before flag parsing (exit immediately).
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println(version)
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--healthcheck" {
+		cfg := config.Load()
+		if !probeHealth(healthURL(cfg.Port, cfg.Mode), 3*time.Second) {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 

@@ -85,6 +85,28 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Smoke-test image
+        run: |
+          set -euo pipefail
+          docker run --rm ghcp-sdk-oai-wrapper:ci --version
+          # The native Copilot CLI must run on the distroless glibc base.
+          docker run --rm --entrypoint /usr/local/bin/copilot ghcp-sdk-oai-wrapper:ci --version
+          docker run -d --name smoke -e GITHUB_TOKEN=ci-smoke-invalid ghcp-sdk-oai-wrapper:ci
+          trap 'docker logs smoke || true; docker rm -f smoke >/dev/null 2>&1 || true' EXIT
+          for _ in $(seq 1 60); do
+            if docker exec smoke /server --healthcheck; then
+              echo "healthy"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke)" != "true" ]; then
+              echo "::error::container exited before becoming healthy"
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::container did not become healthy within 60s"
+          exit 1
+
       - name: Scan image with Trivy
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
@@ -92,6 +114,8 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
+          # SARIF output otherwise includes every severity regardless of `severity`.
+          limit-severities-for-sarif: true
 
       - name: Upload Trivy scan results to GitHub Security
         uses: github/codeql-action/upload-sarif@7188fc363630916deb702c7fdcf4e481b751f97a # v4

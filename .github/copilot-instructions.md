@@ -22,6 +22,7 @@ go test -tags e2e -v -run TestChatCompletions_Streaming -timeout 10m ./test/e2e/
 ./server --mode openai --port 8080   # OpenAI-compatible mode (default)
 ./server --mode ollama --port 11434  # Ollama-compatible mode
 ./server --version                   # Print version and exit
+./server --healthcheck               # Probe the local health endpoint (exit 0 = healthy); used by the Docker HEALTHCHECK
 ./server --default-model gpt-6-luna  # Model used when a request omits one (default claude-haiku-5.5)
 ```
 

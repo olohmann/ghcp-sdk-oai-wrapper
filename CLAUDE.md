@@ -42,4 +42,4 @@ Both modes share the same Copilot SDK backend via `internal/copilot.Client.NewCh
 - Structured logging with `log/slog` (JSON output)
 - Configuration via env vars; CLI flags (`--port`, `--mode`, `--default-model`) override env vars
 - Requests without a `model` use `DEFAULT_MODEL` (default `claude-haiku-5.5`)
-- Docker base image: `node:22-slim` (Debian, glibc required by Copilot CLI native binary; Alpine/musl does NOT work)
+- Docker runtime image: distroless `gcr.io/distroless/cc-debian13` (glibc required by the Copilot CLI native binary; Alpine/musl does NOT work). The CLI's native binary is extracted from `@github/copilot-linux-<arch>` at build time; the image has no Node.js, npm, or shell. Health checks use `/server --healthcheck`.

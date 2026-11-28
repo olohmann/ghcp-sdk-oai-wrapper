@@ -285,7 +285,13 @@ print(response.choices[0].message.content)
 
 ## Docker
 
-The Docker image includes the Copilot CLI pre-installed via npm.
+The Docker image is based on distroless `gcr.io/distroless/cc-debian13`, with no
+shell, package manager, or Node.js. It contains only the server and the Copilot
+CLI's standalone native binary, which is extracted from the pinned
+`@github/copilot-linux-<arch>` npm package at build time. The image runs as
+uid/gid 1000 with `HOME=/home/copilot`; its health check runs
+`/server --healthcheck`, which probes the local `/healthz` endpoint (or `/` in
+Ollama mode).
 
 ```bash
 docker build -t ghcp-oai-wrapper .
@@ -432,7 +438,7 @@ The CI workflow runs automatically on pushes to `main` and on pull requests:
 |-----|-------------|
 | **build-and-test** | Build, unit tests, `go vet` lint, `govulncheck` vulnerability scan |
 | **helm-lint** | Lint the Helm chart |
-| **docker-build** | Build the Docker image (no push), scan with [Trivy](https://trivy.dev/), upload SARIF results to GitHub Security |
+| **docker-build** | Build the Docker image (no push), smoke-test the server and native Copilot CLI, scan with [Trivy](https://trivy.dev/), upload CRITICAL/HIGH SARIF results to GitHub Security |
 
 All checks must pass before a pull request can be merged.
 
