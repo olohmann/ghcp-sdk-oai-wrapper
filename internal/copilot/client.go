@@ -12,6 +12,8 @@ import (
 
 	copilot "github.com/github/copilot-sdk/go"
 	"github.com/github/copilot-sdk/go/rpc"
+
+	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/metrics"
 )
 
 // builtinMCPServers are the MCP servers the runtime supplies itself. MCP
@@ -89,7 +91,20 @@ func (c *Client) Start(ctx context.Context) error {
 	c.logger.Info("Copilot CLI server started")
 	c.discoverMCPServers(ctx)
 	c.warmUp(ctx)
+	c.loadModelCatalog(ctx)
 	return nil
+}
+
+// loadModelCatalog lists models once at startup so metrics label and
+// pre-initialise every known model before the first request. Failure is
+// non-fatal: metrics fall back to prefix-based labels until a later listing
+// (e.g. GET /v1/models) succeeds.
+func (c *Client) loadModelCatalog(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := c.ListModels(ctx); err != nil {
+		c.logger.Warn("model catalog unavailable at startup; metrics use prefix-based model labels", "error", err)
+	}
 }
 
 // warmUp creates and releases one throwaway session for an available model so
@@ -185,11 +200,20 @@ func (c *Client) ResolveModel(model string) string {
 	return c.defaultModel
 }
 
-// ListModels returns the available models from the Copilot CLI.
+// ListModels returns the available models from the Copilot CLI. Every
+// successful listing also refreshes the model labels used by metrics.
 func (c *Client) ListModels(ctx context.Context) ([]copilot.ModelInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.inner.ListModels(ctx)
+	models, err := c.inner.ListModels(ctx)
+	if err == nil {
+		ids := make([]string, 0, len(models))
+		for _, m := range models {
+			ids = append(ids, m.ID)
+		}
+		metrics.SetKnownModels(ids)
+	}
+	return models, err
 }
 
 // CreateSession creates a new Copilot session with the given configuration.

@@ -350,6 +350,14 @@ The chart is also available in the repository at `charts/ghcp-sdk-oai-wrapper/`.
 | `copilot_chat_completion_duration_seconds` | Histogram | model, stream |
 | `copilot_image_attachments_total` | Counter | — |
 
+The `model` label uses the model IDs from the Copilot catalog, plus `auto`. Any other name,
+such as a typo or an invalid model, is reported as `other`, so request input cannot create
+new series. The catalog is loaded at startup and refreshed on every successful model listing,
+including `GET /v1/models`. When a model is loaded, its `copilot_chat_completions_total`
+series are created at `0`, so `increase()` and `rate()` count the first request after a
+restart. If the catalog cannot be loaded, a prefix rule is used instead (`gpt-`, `claude-`,
+`gemini-`, …).
+
 ### How it works
 
 Every chat request creates a fresh Copilot session, sends the prompt, and returns or streams the

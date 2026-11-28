@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -59,14 +60,57 @@ func RecordCompletion(model string, stream bool, status string, duration time.Du
 	ChatCompletionDuration.WithLabelValues(m, s).Observe(duration.Seconds())
 }
 
-// sanitizeModel limits the model label to prevent unbounded cardinality.
-// Unknown models are grouped under "other" to avoid metrics explosion from
-// user-controlled input.
-func sanitizeModel(model string) string {
-	if len(model) > 64 {
-		return "other"
+const (
+	// maxModelLabelLen bounds model label values.
+	maxModelLabelLen = 64
+	// otherModel groups model names that are not in the known catalog.
+	otherModel = "other"
+)
+
+// knownModels holds the model IDs reported by the Copilot catalog. Until a
+// catalog has been loaded, model labels fall back to a prefix allowlist.
+var knownModels atomic.Pointer[map[string]struct{}]
+
+// SetKnownModels replaces the set of model IDs used as metric labels and
+// pre-creates their completion counters at zero, so the first request of each
+// series after a restart is visible to increase() and rate(). Cardinality stays
+// bounded by the catalog: request input alone can never create a new series.
+func SetKnownModels(ids []string) {
+	set := map[string]struct{}{"auto": {}}
+	for _, id := range ids {
+		if id != "" && len(id) <= maxModelLabelLen {
+			set[id] = struct{}{}
+		}
 	}
-	// Allow known prefixes used by Copilot models.
+	knownModels.Store(&set)
+	for m := range set {
+		initCompletionCounters(m)
+	}
+	initCompletionCounters(otherModel)
+}
+
+func initCompletionCounters(model string) {
+	for _, stream := range []string{"true", "false"} {
+		for _, status := range []string{"success", "error"} {
+			ChatCompletionsTotal.WithLabelValues(model, stream, status)
+		}
+	}
+}
+
+// sanitizeModel limits the model label to prevent unbounded cardinality from
+// user-controlled input: models in the known catalog keep their name, anything
+// else is grouped under "other".
+func sanitizeModel(model string) string {
+	if model == "" || len(model) > maxModelLabelLen {
+		return otherModel
+	}
+	if known := knownModels.Load(); known != nil {
+		if _, ok := (*known)[model]; ok {
+			return model
+		}
+		return otherModel
+	}
+	// No catalog loaded yet (e.g. listing failed at startup).
 	for _, prefix := range []string{
 		"gpt-", "claude-", "o1-", "o3-", "o4-",
 		"copilot-", "gemini-",
@@ -75,7 +119,7 @@ func sanitizeModel(model string) string {
 			return model
 		}
 	}
-	return "other"
+	return otherModel
 }
 
 // RecordImageAttachments increments the image attachment counter.
