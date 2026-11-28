@@ -23,7 +23,7 @@ func hasToolResults(messages []oai.Message) bool {
 // SDK tools (nil handler). The model's calls to a declaration-only tool surface
 // as pending ExternalToolRequested events rather than running a handler, which
 // is what lets turn-1 emit tool_calls and turn-2 resolve them on the same
-// parked session.
+// parked session. Caller declarations take precedence over same-named built-ins.
 func toolsToSDK(tools []oai.Tool) []copilot.Tool {
 	out := make([]copilot.Tool, 0, len(tools))
 	for _, t := range tools {
@@ -31,10 +31,11 @@ func toolsToSDK(tools []oai.Tool) []copilot.Tool {
 			continue
 		}
 		out = append(out, copilot.Tool{
-			Name:           t.Function.Name,
-			Description:    t.Function.Description,
-			Parameters:     t.Function.Parameters,
-			SkipPermission: true,
+			Name:                 t.Function.Name,
+			Description:          t.Function.Description,
+			Parameters:           t.Function.Parameters,
+			OverridesBuiltInTool: true,
+			SkipPermission:       true,
 		})
 	}
 	return out
