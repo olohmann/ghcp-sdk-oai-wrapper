@@ -253,6 +253,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClie
 		oai.WriteError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
 		return
 	}
+	defer sse.Close()
 
 	prompt := buildPrompt(req.Messages)
 	session, err := createSession(ctx, client, req, true, nil)

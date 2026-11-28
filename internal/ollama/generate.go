@@ -125,6 +125,7 @@ func handleGenerateStreaming(ctx context.Context, w http.ResponseWriter, client 
 		WriteError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	defer ndjson.Close()
 
 	done := make(chan struct{})
 	var once sync.Once

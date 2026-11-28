@@ -71,6 +71,15 @@ func (s *SSEWriter) WriteDone() error {
 	return nil
 }
 
+// Close marks the stream finished without writing anything. Handlers defer it
+// so SDK callbacks that fire after the handler returns (unsubscribing does not
+// wait for in-flight callbacks) cannot touch a recycled ResponseWriter.
+func (s *SSEWriter) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.done = true
+}
+
 // WriteError writes an error as a JSON response (non-SSE).
 func WriteError(w http.ResponseWriter, status int, message, errType string) {
 	w.Header().Set("Content-Type", "application/json")

@@ -4,12 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
-// NDJSONWriter writes newline-delimited JSON to an http.ResponseWriter.
+// NDJSONWriter writes newline-delimited JSON to an http.ResponseWriter. It is
+// safe for concurrent use.
 type NDJSONWriter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
+	mu      sync.Mutex
+	closed  bool
 }
 
 // NewNDJSONWriter creates a writer and sets headers for NDJSON streaming.
@@ -31,18 +35,29 @@ func NewNDJSONWriter(w http.ResponseWriter) (*NDJSONWriter, error) {
 
 // WriteLine writes a single JSON line followed by a newline, then flushes.
 func (n *NDJSONWriter) WriteLine(v any) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed {
+		return fmt.Errorf("NDJSON stream already closed")
+	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal NDJSON line: %w", err)
 	}
-	if _, err := n.w.Write(data); err != nil {
+	if _, err := n.w.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("write NDJSON line: %w", err)
-	}
-	if _, err := n.w.Write([]byte("\n")); err != nil {
-		return fmt.Errorf("write newline: %w", err)
 	}
 	n.flusher.Flush()
 	return nil
+}
+
+// Close marks the stream finished without writing anything. Handlers defer it
+// so SDK callbacks that fire after the handler returns (unsubscribing does not
+// wait for in-flight callbacks) cannot touch a recycled ResponseWriter.
+func (n *NDJSONWriter) Close() {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.closed = true
 }
 
 // WriteJSON writes a non-streaming JSON response.

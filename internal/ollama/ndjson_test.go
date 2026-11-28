@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -111,5 +112,50 @@ func TestWriteJSON_Format(t *testing.T) {
 	}
 	if resp.Version != "1.0" {
 		t.Errorf("expected version '1.0', got %q", resp.Version)
+	}
+}
+
+// Late SDK callbacks may fire after the handler returns; a closed writer must
+// drop them so nothing reaches a ResponseWriter that net/http has recycled.
+func TestNDJSONWriter_Close(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, err := NewNDJSONWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteLine(map[string]string{"a": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	before := rec.Body.String()
+	if err := w.WriteLine(map[string]string{"late": "x"}); err == nil {
+		t.Error("expected an error writing after Close")
+	}
+	w.Close()
+	if got := rec.Body.String(); got != before || strings.Contains(got, "late") {
+		t.Fatalf("bytes written after Close: %q", got)
+	}
+}
+
+func TestNDJSONWriter_ConcurrentLines(t *testing.T) {
+	rec := httptest.NewRecorder()
+	w, err := NewNDJSONWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = w.WriteLine(map[string]string{"k": strings.Repeat("v", 64)})
+		}()
+	}
+	wg.Wait()
+	for _, line := range strings.Split(strings.TrimSpace(rec.Body.String()), "\n") {
+		var v map[string]string
+		if err := json.Unmarshal([]byte(line), &v); err != nil {
+			t.Fatalf("interleaved NDJSON line %q: %v", line, err)
+		}
 	}
 }

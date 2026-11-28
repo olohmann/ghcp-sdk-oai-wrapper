@@ -165,6 +165,7 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 		oai.WriteError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
 		return
 	}
+	defer sse.Close()
 
 	// The session is parked (kept alive) between turn-1 and turn-2, so it must
 	// outlive this HTTP request: create and drive it with a detached context.

@@ -140,3 +140,28 @@ func containsSubstr(s, substr string) bool {
 	}
 	return false
 }
+
+// Late SDK callbacks may fire after the handler returns; a closed writer must
+// drop them so nothing reaches a ResponseWriter that net/http has recycled.
+func TestSSEWriterClose(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sse, err := oai.NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sse.WriteEvent(map[string]string{"a": "1"}); err != nil {
+		t.Fatal(err)
+	}
+	sse.Close()
+	before := rec.Body.String()
+	if err := sse.WriteEvent(map[string]string{"late": "x"}); err == nil {
+		t.Error("expected an error writing after Close")
+	}
+	if err := sse.WriteDone(); err != nil {
+		t.Errorf("WriteDone after Close must be a no-op, got %v", err)
+	}
+	sse.Close()
+	if got := rec.Body.String(); got != before || strings.Contains(got, "late") || strings.Contains(got, "[DONE]") {
+		t.Fatalf("bytes written after Close: %q", got)
+	}
+}

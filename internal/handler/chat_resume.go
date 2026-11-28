@@ -170,6 +170,7 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 		oai.WriteError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
 		return
 	}
+	defer sse.Close()
 
 	completionID := oai.NewCompletionID()
 	created := oai.NowUnix()

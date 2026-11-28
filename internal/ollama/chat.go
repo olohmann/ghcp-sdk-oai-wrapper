@@ -133,6 +133,7 @@ func handleChatStreaming(ctx context.Context, w http.ResponseWriter, client *wra
 		WriteError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	defer ndjson.Close()
 
 	done := make(chan struct{})
 	var once sync.Once

@@ -1,547 +1,425 @@
-# GitHub Copilot SDK → OpenAI API Wrapper
+<div align="center">
+
+# 🛰️ ghcp-sdk-oai-wrapper
+
+**Use GitHub Copilot models from any OpenAI- or Ollama-compatible client.**
+
+A small, stateless Go server that turns the [GitHub Copilot SDK](https://github.com/github/copilot-sdk)
+into a drop-in `/v1/chat/completions` (or Ollama `/api/chat`) endpoint, with
+streaming, tool calling, vision, reasoning effort, and file attachments.
 
 [![CI](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/ci.yml/badge.svg)](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/ci.yml)
-[![Release](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/release.yml/badge.svg)](https://github.com/olohmann/ghcp-sdk-oai-wrapper/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/olohmann/ghcp-sdk-oai-wrapper?sort=semver)](https://github.com/olohmann/ghcp-sdk-oai-wrapper/releases/latest)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/olohmann/ghcp-sdk-oai-wrapper)](go.mod)
 [![Go Report Card](https://goreportcard.com/badge/github.com/olohmann/ghcp-sdk-oai-wrapper)](https://goreportcard.com/report/github.com/olohmann/ghcp-sdk-oai-wrapper)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Image: distroless](https://img.shields.io/badge/image-distroless-4285F4?logo=docker&logoColor=white)](#-docker)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-An HTTP server written in Go that exposes an **OpenAI-compatible API** and delegates
-all inference to the [GitHub Copilot SDK](https://github.com/github/copilot-sdk).
+[Quick start](#-quick-start) ·
+[Features](#-features) ·
+[Configuration](#%EF%B8%8F-configuration) ·
+[API guide](#-api-guide) ·
+[Raycast](#-raycast) ·
+[Deploy](#-deploy) ·
+[Operations](#-operations)
 
-Any tool, library, or application that speaks the OpenAI chat completions protocol
-can use GitHub Copilot models through this wrapper without modification.
+</div>
 
-## Features
+---
 
-- **`POST /v1/chat/completions`** — streaming (SSE) and non-streaming modes
-- **Multimodal input** — `content` accepts the OpenAI array format with `text`, `image_url` (images), and `file` (PDFs and other documents) parts as base64 data URIs
-- **`GET /v1/models`** — lists available models and SDK-reported context limits
-- **`GET /healthz`** — health check
-- **`GET /metrics`** — Prometheus-compatible metrics endpoint
-- Optional **Bearer-token authentication**
-- **Headless authentication** via `GITHUB_TOKEN` for CI/CD and Kubernetes deployments
-- Structured JSON logging via `log/slog`
-- Graceful shutdown on SIGINT/SIGTERM
-- **Helm chart** for Kubernetes deployment
+```text
+OpenAI SDK · Raycast · LangChain · Open WebUI · curl          Ollama clients
+                 │                                                  │
+                 ▼                                                  ▼
+          /v1/chat/completions  ◄──── --mode openai | ollama ────►  /api/chat
+                 └──────────────────────────┬───────────────────────┘
+                                            ▼
+                         Copilot SDK (JSON-RPC) → Copilot CLI → GitHub Copilot
+```
 
-## Prerequisites
+## ✨ Features
 
-- **Go 1.26.11+**
-- **GitHub Copilot CLI 1.0.112** installed and authenticated
-  (`copilot` must be on your `PATH`, or set `COPILOT_CLI_PATH`)
-- An active **GitHub Copilot subscription**
+| | |
+|---|---|
+| 🔌 **Two API surfaces** | OpenAI-compatible (`/v1/chat/completions`, `/v1/models`) or Ollama-compatible (`/api/chat`, `/api/generate`, `/api/tags`, …), selected with `--mode`. |
+| ⚡ **Streaming** | SSE in OpenAI mode and NDJSON in Ollama mode, with explicit error events instead of silent hangs. |
+| 🛠️ **Tool calling** | Structured OpenAI `tool_calls`, executed by **your** client. Supports multi-round flows, parallel calls, and tools discovered mid-turn. |
+| 👁️ **Vision and files** | Inline `image_url` and `file` (PDF, text, …) content parts as base64 data URIs. |
+| 🧠 **Reasoning effort** | Per-request `reasoning_effort`, validated against each model's SDK-reported levels. |
+| 📇 **Rich model catalog** | `/v1/models` exposes `context_window`, `supports_vision`, and the reasoning capabilities reported by the SDK. |
+| 🔐 **Auth** | Optional bearer-token API auth, plus headless Copilot auth through `GITHUB_TOKEN`. |
+| 📈 **Observability** | Prometheus `/metrics`, structured JSON logs (`log/slog`), and `/healthz`. |
+| 📦 **Hardened delivery** | Distroless multi-arch image, cosign signatures, SLSA provenance, SBOM, and a Helm chart. |
+| 🪶 **Lean** | Go stdlib plus the Copilot SDK only; no web frameworks. Every request uses a fresh, isolated Copilot session. |
 
-The wrapper uses Copilot SDK **v1.0.34**. The Docker image pins the matching
-CLI version; source and binary installations must provide the CLI separately.
+## 🚀 Quick start
 
-## Quick Start
+### Docker (recommended)
 
 ```bash
-# Build
-make build
+docker run --rm -p 8080:8080 \
+  -e GITHUB_TOKEN=ghp_your_copilot_token \
+  -e API_KEY=my-secret \
+  ghcr.io/olohmann/ghcp-sdk-oai-wrapper:latest
+```
 
-# Run
-make run
+`GITHUB_TOKEN` must be a GitHub token with Copilot access, and the account needs an active
+**GitHub Copilot subscription**.
 
-# Install to ~/.local/bin
-make install
+### From source
 
-# Or with configuration
+Requires **Go 1.26.11+** and **GitHub Copilot CLI 1.0.112**. The CLI must be authenticated
+and on your `PATH`, or you can set `COPILOT_CLI_PATH`.
+
+```bash
+make build                      # → bin/ghcp-sdk-oai-wrapper
+make run                        # build + run on :8080
+make install                    # → ~/.local/bin
+
 PORT=9090 API_KEY=my-secret LOG_LEVEL=debug ghcp-sdk-oai-wrapper
+ghcp-sdk-oai-wrapper --mode ollama --port 11434
 ```
 
-Run `make help` for all available targets.
+> The wrapper uses Copilot SDK **v1.0.34**. The Docker image bundles the matching CLI;
+> source and binary installs must provide the CLI themselves.
 
-Run unit tests with `make test`. Live integration tests require an authenticated
-Copilot CLI: run `make test-e2e`, or `E2E_MODEL=<model-id> make test-e2e` to use a
-specific model instead of the default `auto`.
-
-## Configuration
-
-| Environment Variable | Default    | Description                                          |
-|----------------------|------------|------------------------------------------------------|
-| `PORT`               | `8080`     | HTTP server listen port                              |
-| `API_KEY`            | *(empty)*  | Bearer token for API auth (disabled if empty)        |
-| `LOG_LEVEL`          | `info`     | Log level: `debug`, `info`, `warn`, `error`          |
-| `COPILOT_CLI_PATH`   | *(empty)*  | Path to `copilot` CLI binary (auto-detected if empty)|
-| `GITHUB_TOKEN`       | *(empty)*  | GitHub token with Copilot scope for headless auth    |
-| `DEFAULT_MODEL`      | `claude-haiku-5.5` | Model used when a request omits `model` (`--default-model` flag overrides) |
-
-## Usage Examples
-
-### Non-streaming
+### Say hello
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
   -H "Authorization: Bearer my-secret" \
-  -d '{
-    "model": "auto",
-    "messages": [
-      {"role": "system", "content": "You are a helpful assistant."},
-      {"role": "user", "content": "Hello!"}
-    ]
-  }'
-```
-
-### Streaming
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer my-secret" \
-  -d '{
-    "model": "auto",
-    "messages": [
-      {"role": "user", "content": "Tell me a joke"}
-    ],
-    "stream": true
-  }'
+  -d '{"model": "claude-sonnet-5.5", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
-
-### Tool Calling
-
-Declare caller-provided functions in the OpenAI `tools` field. When the model
-requests a tool, the wrapper returns structured `tool_calls` with
-`finish_reason: "tool_calls"`. Execute the tool in the caller and send its
-result back as a `role: "tool"` message with the matching `tool_call_id`.
-
-Caller tools retain their names and override same-named SDK built-ins, such as
-`bash` and `grep`, during registration and updates. They remain declaration-only:
-execution stays with the caller, not the wrapper's runtime.
-
-Continuation requests must end with the current round's tool-result messages.
-Full conversation history can be retained: only the latest tool round selects
-the parked session, and a new user message starts a new session. Tool
-declarations do not need to be repeated when returning results.
-
-If a continuation supplies `tools`, that list replaces the live session's
-caller-provided tools before results are delivered to the model. This supports
-clients that discover and attach new tools during a turn. Omitted or `null`
-tools preserve the current set; an explicit `[]` removes it. Runtime built-in
-and MCP tools stay disabled. Failed tool updates return HTTP 500 before SSE
-starts, without resolving pending calls or replaying tool actions.
-
-Parked sessions are held in memory by the server instance that emitted the
-call. Continuations must reach that instance; expired sessions, server restarts,
-and requests reaching another replica still return HTTP 409. This does not
-replay or re-execute tools automatically.
-
-### Completion Failures
-
-OpenAI chat requests have a five-minute completion budget, including session
-setup and pending tool-result RPCs. SDK session errors are logged and returned
-explicitly rather than being treated as empty successful answers.
-Non-streaming tool failures preserve a reported upstream HTTP error status
-(otherwise HTTP 500), and provider error types/codes when supplied. Deadline
-expiry returns HTTP 504.
-Once SSE starts, failures are sent as an OpenAI `error` event followed by
-`[DONE]`, without a successful `finish_reason`. Tool sessions still survive
-between requests; this does not replay tools or extend expired sessions.
-
-### Reasoning Effort
-
-For models that support it, set `reasoning_effort` on chat completion requests:
-
-```json
-{
-  "model": "<model-id-from-v1-models>",
-  "reasoning_effort": "high",
-  "messages": [{"role": "user", "content": "Solve this problem carefully."}]
-}
-```
-
-Choose a level from that model's `supported_reasoning_efforts` in `/v1/models`;
-levels such as `low`, `medium`, `high`, `xhigh`, and `max` are model-dependent.
-The value is passed directly to the Copilot SDK for both streaming and
-non-streaming requests, including caller-provided tools. Omitting the field or
-setting it to `null` preserves the SDK's default without a model-catalog lookup.
-
-Empty values, unsupported levels/models, and models without advertised levels
-return HTTP 400. A failed catalog lookup returns HTTP 500. These errors are
-returned as JSON before streaming starts. During a tool round-trip, omit the
-field or repeat its original value; changing it returns HTTP 400 without
-consuming the parked session, so the caller can retry with the original setting.
-
-### Multimodal (Image Input)
-
-Send images as base64 data URIs using the OpenAI multimodal content format:
-
-```bash
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer my-secret" \
-  -d '{
-    "model": "auto",
-    "messages": [
-      {"role": "user", "content": [
-        {"type": "text", "text": "What is in this image?"},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo..."}}
-      ]}
-    ]
-  }'
-```
-
-Use a model with `supports_vision: true` in `/v1/models`. Supported image formats:
-any `image/*` MIME the Copilot model accepts (PNG, JPEG, GIF, WebP, etc.). The MIME
-type is taken from the `data:` URI and passed through to the SDK unchanged — no
-fixed allow-list.
-
-> **Note:** Only `data:` URIs (inline base64) are supported. External `https://` image URLs are not forwarded to the model. `image_url` parts must use an `image/*` MIME type — non-image documents like PDFs go through the `file` content part below.
-
-### File Attachments (PDF and other documents)
-
-For non-image attachments such as PDFs, use the official OpenAI `file` content
-part with an inline base64 data URI. The schema matches the
-[`openai/openai-go`](https://github.com/openai/openai-go) Go SDK
-(`ChatCompletionContentPartFileParam`) and the OpenAI Chat Completions API:
-
-```bash
-PDF_B64=$(base64 -i report.pdf | tr -d '\n')
-
-curl http://localhost:8080/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer my-secret" \
-  -d "{
-    \"model\": \"auto\",
-    \"messages\": [
-      {\"role\": \"user\", \"content\": [
-        {\"type\": \"text\", \"text\": \"Summarize this PDF.\"},
-        {\"type\": \"file\", \"file\": {\"file_data\": \"data:application/pdf;base64,${PDF_B64}\", \"filename\": \"report.pdf\"}}
-      ]}
-    ]
-  }"
-```
-
-Notes:
-- `file.file_data` must be a `data:<mime>;base64,...` URI. The `filename`
-  field is optional but recommended — it surfaces as the attachment's display
-  name to the model.
-- `file.file_id` (referencing a file uploaded via OpenAI's Files API) is
-  **not** supported by this server — embed the file inline via `file_data`
-  instead.
-- The MIME type is passed through to the Copilot SDK as-is — there is no
-  fixed allow-list. Common document types (PDF, plain text, markdown, JSON,
-  CSV) are known to work.
-
-Attachments are forwarded to the Copilot CLI as inline base64 blobs
-(`UserMessageAttachmentBlob`) — no temp files are written to disk.
-
-### List Models
-
-```bash
-curl http://localhost:8080/v1/models \
-  -H "Authorization: Bearer my-secret"
-```
-
-Each model includes an optional `context_window` field containing the total
-context limit in tokens reported by the Copilot SDK. The field is omitted when
-the SDK does not report a limit; prompt limits and vendor defaults are not used
-as substitutes. Existing OpenAI model fields are unchanged.
-
-Each model includes `supports_vision`, taken directly from the SDK's vision
-capability flag. The boolean is present even when false; model names and vendor
-defaults are not used to infer image support.
-
-Each model also includes `supports_reasoning_effort`, taken from the SDK's
-capability flag. Optional `supported_reasoning_efforts` and
-`default_reasoning_effort` fields expose the exact SDK-reported levels and
-default; unknown values are omitted rather than inferred.
-
-For Raycast custom providers, use a positive `context_window` value from your
-deployed wrapper as the model's `context` in `providers.yaml`.
-
-Image attachments in Raycast require `abilities.vision.supported: true` for the
-selected custom model. Set this only when that model's deployed `supports_vision`
-is true; leave it disabled when false or when the field is missing. For example,
-inside a confirmed vision model's entry:
-
-```yaml
-abilities:
-  vision:
-    supported: true
-```
-
-Keep the model's other abilities unchanged. Raycast watches `providers.yaml` for
-changes, so no restart is normally needed. This enables image input, not image
-generation.
-
-### Use with OpenAI Python Client
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://localhost:8080/v1",
-    api_key="my-secret",
-)
-
-response = client.chat.completions.create(
-    model="auto",
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="my-secret")
+resp = client.chat.completions.create(
+    model="claude-sonnet-5.5",
     messages=[{"role": "user", "content": "Hello!"}],
 )
-print(response.choices[0].message.content)
+print(resp.choices[0].message.content)
 ```
 
-## Docker
+Use `GET /v1/models` to list the model IDs available to your Copilot account.
 
-The Docker image is based on distroless `gcr.io/distroless/cc-debian13`, with no
-shell, package manager, or Node.js. It contains only the server and the Copilot
-CLI's standalone native binary, which is extracted from the pinned
-`@github/copilot-linux-<arch>` npm package at build time. The image runs as
-uid/gid 1000 with `HOME=/home/copilot`; its health check runs
-`/server --healthcheck`, which probes the local `/healthz` endpoint (or `/` in
-Ollama mode).
+## ⚙️ Configuration
+
+| Variable | Flag | Default | Description |
+|---|---|---|---|
+| `PORT` | `--port` | `8080` | HTTP listen port |
+| `MODE` | `--mode` | `openai` | API surface: `openai` or `ollama` |
+| `DEFAULT_MODEL` | `--default-model` | `claude-haiku-5.5` | Model used when a request omits `model` |
+| `API_KEY` | | *(empty)* | Bearer token required from clients; auth is disabled when empty |
+| `GITHUB_TOKEN` | | *(empty)* | GitHub token with Copilot access for headless authentication |
+| `COPILOT_CLI_PATH` | | *(auto)* | Path to the `copilot` CLI; defaults to `copilot` on `PATH` |
+| `LOG_LEVEL` | | `info` | `debug`, `info`, `warn`, or `error` |
+| `TOOL_SESSION_TTL` | | `10m` | How long a parked tool session waits for the client's tool results |
+| `TOOL_SESSION_MAX_PARKED` | | `256` | Maximum number of concurrently parked tool sessions; the oldest is evicted first |
+
+Flags override environment variables. Additional commands:
+
+- `--version` prints the version.
+- `--healthcheck` probes the local health endpoint and exits with `0` when healthy.
+
+## 📖 API guide
+
+### Endpoints
+
+| OpenAI mode (default) | Ollama mode |
+|---|---|
+| `POST /v1/chat/completions`: chat, SSE streaming, tools | `POST /api/chat`: chat, NDJSON streaming |
+| `GET /v1/models`: model catalog and capabilities | `POST /api/generate`: prompt completion |
+| `GET /healthz`: health *(no auth)* | `GET /api/tags`, `POST /api/show`: models |
+| `GET /metrics`: Prometheus *(no auth)* | `GET /api/version`, `GET /`: version and health *(no auth)* |
+
+<details>
+<summary><b>⚡ Streaming</b></summary>
+
+Set `"stream": true` to receive OpenAI `chat.completion.chunk` events over SSE, terminated by
+`data: [DONE]`.
 
 ```bash
-docker build -t ghcp-oai-wrapper .
-docker run -p 8080:8080 \
-  -e API_KEY=my-secret \
-  -e GITHUB_TOKEN=ghp_... \
-  ghcp-oai-wrapper
+curl -N http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer my-secret" -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-5.5", "stream": true,
+       "messages": [{"role": "user", "content": "Tell me a joke"}]}'
 ```
 
-Authenticate by passing `GITHUB_TOKEN` (a GitHub PAT with Copilot scope).
+</details>
 
-## Kubernetes / Helm
+<details>
+<summary><b>🛠️ Tool calling</b></summary>
 
-A Helm chart is provided in `charts/ghcp-sdk-oai-wrapper/` for production Kubernetes deployments.
+Declare functions in the OpenAI `tools` field. When the model calls one, the wrapper returns
+structured `tool_calls` with `finish_reason: "tool_calls"`. Your client executes the tool and
+sends the result back as a `role: "tool"` message with the matching `tool_call_id`.
 
-### Install
+- **Client-side execution.** Tools are declaration-only. They never run inside the wrapper.
+  Caller tools keep their names and take precedence over same-named Copilot built-ins such as
+  `bash` and `grep`. Copilot's own built-in and MCP tools stay disabled.
+- **Session parking.** Between rounds, the live Copilot session is parked in memory and keyed
+  by an opaque token embedded in each `tool_call_id`.
+- **Continuation.** A continuation request must end with the current round's tool results.
+  - Full chat history is fine: only the latest tool round selects the parked session.
+  - A new user message starts a fresh session.
+  - Tool declarations do not need to be repeated.
+- **Multi-round, parallel, and dynamic tools.**
+  - The model can call several tools at once or chain rounds.
+  - A continuation that includes `tools` replaces the session's tool set before results are
+    delivered. This supports clients that discover tools mid-turn.
+  - Omitted or `null` tools keep the current set; `[]` clears it.
+- **Failure behavior.**
+  - A failed tool update returns HTTP 500 before streaming starts, without resolving pending
+    calls.
+  - Expired sessions, restarts, or requests routed to another replica return **HTTP 409**
+    (`tool_session_expired`).
+  - Tools are never replayed automatically.
+
+> Parked sessions live on the instance that issued the call. With multiple replicas, use
+> session affinity.
+
+</details>
+
+<details>
+<summary><b>👁️ Vision and file attachments</b></summary>
+
+Send images and documents inline as base64 data URIs using the standard OpenAI content-part
+format:
+
+```json
+{"role": "user", "content": [
+  {"type": "text", "text": "What is in this image? Then summarize the PDF."},
+  {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo..."}},
+  {"type": "file", "file": {"file_data": "data:application/pdf;base64,JVBERi0...", "filename": "report.pdf"}}
+]}
+```
+
+- Use a model whose `/v1/models` entry has `supports_vision: true`.
+- `image_url` requires an `image/*` MIME type. Use `file` for PDFs and other documents.
+- Only `data:` URIs are supported. Remote `https://` URLs and OpenAI `file_id`
+  references are not.
+- MIME types pass through unchanged. Attachments are forwarded in memory; nothing is written
+  to disk.
+
+</details>
+
+<details>
+<summary><b>🧠 Reasoning effort</b></summary>
+
+```json
+{"model": "claude-sonnet-5.5", "reasoning_effort": "high",
+ "messages": [{"role": "user", "content": "Solve this carefully."}]}
+```
+
+- Choose a level from the model's `supported_reasoning_efforts` in `/v1/models`. Levels
+  such as `low`, `medium`, `high`, `xhigh`, and `max` are model-dependent.
+- Omit the field or set it to `null` to use the SDK default.
+- Unsupported values return **HTTP 400** before streaming starts.
+- During a tool round-trip, omit the field or repeat the original value. Changing it returns
+  HTTP 400 without consuming the parked session.
+
+</details>
+
+<details>
+<summary><b>📇 Model catalog</b></summary>
+
+`GET /v1/models` returns standard OpenAI model objects, extended with SDK-reported metadata:
+
+| Field | Meaning |
+|---|---|
+| `context_window` | Total context limit in tokens; omitted when the SDK does not report one |
+| `supports_vision` | Image input support; always present |
+| `supports_reasoning_effort` | Whether `reasoning_effort` is accepted |
+| `supported_reasoning_efforts` / `default_reasoning_effort` | Exact SDK levels and default; omitted when unknown |
+
+Values are never inferred from model names or vendor defaults.
+
+</details>
+
+<details>
+<summary><b>🧯 Completion failures and timeouts</b></summary>
+
+- Each chat request has a **five-minute budget**. It covers session setup and tool-result RPCs.
+- Copilot session errors are returned explicitly; they are never reported as empty
+  "successful" answers.
+- Non-streaming responses preserve upstream HTTP status, provider error type, and provider
+  error code when they are available. Otherwise the status is 500. A timeout returns **504**.
+- After SSE has started, failures are sent as an OpenAI `error` event followed by `[DONE]`,
+  without a `finish_reason`.
+
+</details>
+
+## 🪄 Raycast
+
+The wrapper works as a [Raycast custom provider](https://manual.raycast.com/ai/custom-providers).
+Add it to `~/.config/raycast/ai/providers.yaml`:
+
+```yaml
+providers:
+  - id: ghcp
+    name: GitHub Copilot SDK
+    base_url: https://copilot.example.com/v1
+    api_keys:
+      ghcp: GHCP_WRAPPER_KEY        # only if API_KEY is set
+    models:
+      - id: claude-sonnet-5.5
+        name: Claude Sonnet 5.5
+        context: 1000000            # ← context_window from /v1/models
+        abilities:
+          vision:
+            supported: true         # ← supports_vision
+          reasoning_effort:
+            supported: true         # ← supports_reasoning_effort
+          tools:
+            supported: true         # structured tool calling
+          system_message:
+            supported: true
+          temperature:
+            supported: false
+```
+
+Populate each model from your deployment's `/v1/models` output, and enable abilities only when
+the catalog confirms them. Raycast watches the file and reloads it automatically.
+
+## 🚢 Deploy
+
+### 🐳 Docker
+
+`ghcr.io/olohmann/ghcp-sdk-oai-wrapper` is a multi-arch image (`linux/amd64`, `linux/arm64`)
+built on **distroless** `gcr.io/distroless/cc-debian13`.
+
+- It contains no shell, package manager, Node.js, or npm.
+- It includes only the server and the Copilot CLI's standalone native binary.
+- It runs as uid/gid `1000` with `HOME=/home/copilot`.
+- Its `HEALTHCHECK` uses `/server --healthcheck`.
+
+> Configure containers through environment variables (`PORT`, `MODE`, …), not CLI flags.
+> The health check runs as a separate process and reads only the environment.
 
 ```bash
-helm install copilot-proxy ./charts/ghcp-sdk-oai-wrapper \
-  --set secrets.githubToken=ghp_your_token_here \
+docker build -t ghcp-sdk-oai-wrapper .
+VERSION=1.2.3 make docker-build
+```
+
+### ☸️ Kubernetes / Helm
+
+```bash
+helm install copilot-proxy \
+  oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper \
+  --version 1.0.0 \
+  --set secrets.githubToken=ghp_... \
   --set secrets.apiKey=my-secret
 ```
 
-### Using an existing Secret
-
-If you manage secrets externally (e.g., Sealed Secrets, External Secrets Operator):
+Use an externally managed secret with the keys `GITHUB_TOKEN` and, optionally, `API_KEY`:
 
 ```bash
 kubectl create secret generic copilot-proxy-secret \
-  --from-literal=GITHUB_TOKEN=ghp_... \
-  --from-literal=API_KEY=my-secret
-
-helm install copilot-proxy ./charts/ghcp-sdk-oai-wrapper \
-  --set secrets.existingSecret=copilot-proxy-secret
+  --from-literal=GITHUB_TOKEN=ghp_... --from-literal=API_KEY=my-secret
+helm install copilot-proxy oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper \
+  --version 1.0.0 --set secrets.existingSecret=copilot-proxy-secret
 ```
 
-### Key values
+| Value | Default | Description |
+|---|---|---|
+| `secrets.githubToken` | `""` | **Required.** GitHub token with Copilot access |
+| `secrets.apiKey` | `""` | Optional client bearer token |
+| `secrets.existingSecret` | `""` | Use a pre-existing Kubernetes Secret |
+| `config.port` / `config.logLevel` | `"8080"` / `"info"` | Listen port and log level |
+| `config.defaultModel` | `""` | Fallback model; empty uses `claude-haiku-5.5` |
+| `metrics.serviceMonitor.enabled` | `false` | Create a Prometheus Operator ServiceMonitor |
+| `autoscaling.enabled` | `false` | Enable the HorizontalPodAutoscaler; use session affinity for tools |
 
-| Value                              | Default     | Description                            |
-|------------------------------------|-------------|----------------------------------------|
-| `secrets.githubToken`              | `""`        | **Required.** GitHub PAT with Copilot scope |
-| `secrets.apiKey`                   | `""`        | Optional Bearer token for API auth     |
-| `secrets.existingSecret`           | `""`        | Use pre-existing K8s Secret            |
-| `config.port`                      | `"8080"`    | HTTP listen port                       |
-| `config.logLevel`                  | `"info"`    | Log level                              |
-| `config.defaultModel`              | `""`        | Model for requests without `model` (empty = `claude-haiku-5.5`) |
-| `metrics.enabled`                  | `true`      | Expose `/metrics` endpoint             |
-| `metrics.serviceMonitor.enabled`   | `false`     | Create Prometheus Operator ServiceMonitor |
-| `autoscaling.enabled`              | `false`     | Enable HorizontalPodAutoscaler        |
+The chart is also available in the repository at `charts/ghcp-sdk-oai-wrapper/`.
 
-## Metrics
+## 🔭 Operations
 
-Prometheus metrics are exposed at `GET /metrics` (unauthenticated).
+### Metrics
 
-### HTTP metrics
+`GET /metrics` is unauthenticated and Prometheus-compatible.
 
-| Metric                          | Type      | Labels                   |
-|---------------------------------|-----------|--------------------------|
-| `http_requests_total`           | Counter   | method, path, status     |
-| `http_request_duration_seconds` | Histogram | method, path             |
-| `http_requests_in_flight`       | Gauge     | —                        |
+| Metric | Type | Labels |
+|---|---|---|
+| `http_requests_total` | Counter | method, path, status |
+| `http_request_duration_seconds` | Histogram | method, path |
+| `http_requests_in_flight` | Gauge | — |
+| `copilot_chat_completions_total` | Counter | model, stream, status |
+| `copilot_chat_completion_duration_seconds` | Histogram | model, stream |
+| `copilot_image_attachments_total` | Counter | — |
 
-### Copilot metrics
+### How it works
 
-| Metric                                     | Type      | Labels         |
-|---------------------------------------------|-----------|----------------|
-| `copilot_chat_completions_total`            | Counter   | model, stream, status |
-| `copilot_chat_completion_duration_seconds`  | Histogram | model, stream  |
-| `copilot_image_attachments_total`           | Counter   | —              |
+Every chat request creates a fresh Copilot session, sends the prompt, and returns or streams the
+response.
 
-```bash
-curl http://localhost:8080/metrics
-```
+- Finished sessions are torn down and deleted from the CLI session store in the background.
+- Only sessions awaiting tool results are kept alive between requests.
+- Sessions run in an empty temporary working directory.
+- Custom instructions, skills, git context, config discovery, and MCP servers are disabled.
+  This lets the model call start within tens of milliseconds.
+- At startup, the server warms the runtime with one throwaway session.
 
-## Architecture
-
-```
-Client (OpenAI-compatible)
-       │
-       ▼
-  HTTP Server (net/http)
-       │
-       ▼
-  OpenAI ↔ Copilot SDK translation layer
-       │
-       ▼
-  Copilot SDK (JSON-RPC)
-       │
-       ▼
-  Copilot CLI (server mode)
-       │
-       ▼
-  GitHub Copilot API
-```
-
-Each chat completion request creates a fresh Copilot session, sends the prompt,
-collects the response (or streams deltas), and tears down the session. This
-provides stateless, OpenAI-compatible semantics.
-
-Sessions are kept lightweight: they run in an empty temporary working directory,
-skip custom instructions, skills, git context and config discovery, and disable
-all MCP servers (user-configured, plugin and built-in), so the model call starts
-within tens of milliseconds. Finished sessions are deleted from the CLI's
-session store (`~/.copilot/session-state`) in the background. At startup the
-server creates one throwaway session to absorb the runtime's one-time model
-initialisation.
-
-## Project Structure
-
-```
-cmd/server/main.go           — Entrypoint, config, lifecycle
-internal/config/config.go    — Environment-based configuration
-internal/copilot/client.go   — Copilot SDK client wrapper
-internal/handler/chat.go     — POST /v1/chat/completions
-internal/handler/models.go   — GET /v1/models
-internal/handler/health.go   — GET /healthz
-internal/metrics/metrics.go  — Prometheus metrics definitions & middleware
-internal/middleware/auth.go   — Bearer-token auth middleware
-internal/oai/types.go        — OpenAI request/response types
-internal/oai/sse.go          — SSE streaming helpers
-test/e2e/e2e_test.go         — End-to-end integration tests
-charts/                      — Helm chart for Kubernetes deployment
-Makefile                     — Build, install, test, run targets
-Dockerfile                   — Multi-stage container build
-```
-
-## Testing
-
-```bash
-# Unit tests
-make test
-
-# End-to-end integration tests (requires Copilot CLI installed & authenticated)
-make test-e2e
-```
-
-## CI/CD
-
-### Continuous Integration (`ci.yml`)
-
-The CI workflow runs automatically on pushes to `main` and on pull requests:
-
-| Job | What it does |
-|-----|-------------|
-| **build-and-test** | Build, unit tests, `go vet` lint, `govulncheck` vulnerability scan |
-| **helm-lint** | Lint the Helm chart |
-| **docker-build** | Build the Docker image (no push), smoke-test the server and native Copilot CLI, scan with [Trivy](https://trivy.dev/), upload CRITICAL/HIGH SARIF results to GitHub Security |
-
-All checks must pass before a pull request can be merged.
-
-### Releasing (`release.yml`)
-
-Releases are fully automated. A single git tag produces **all artifacts with the same semantic version**.
-
-#### How to release
-
-```bash
-git tag v1.2.3
-git push origin v1.2.3
-```
-
-#### Release pipeline
-
-The workflow runs five jobs after the tag push:
-
-```
-validate ─┬─► binaries ──┐
-           ├─► docker ────┼─► github-release
-           └─► helm ──────┘
-```
-
-| Job | Description |
-|-----|-------------|
-| **validate** | Build, test, lint, `govulncheck` — gates all downstream jobs |
-| **binaries** | Cross-compile Go binaries (linux/darwin × amd64/arm64), create tarballs and SHA-256 checksums |
-| **docker** | Build multi-arch image, push to ghcr.io, generate SBOM, scan with Trivy, sign with cosign, attest provenance |
-| **helm** | Update `Chart.yaml` version, lint, package, push OCI chart to ghcr.io |
-| **github-release** | Create GitHub Release with binaries, checksums, Helm chart, and verification instructions |
-
-#### Release artifacts
-
-| Artifact | Location |
-|----------|----------|
-| Go binaries (linux/darwin × amd64/arm64) | GitHub Release attachments |
-| Docker image (multi-arch) | `ghcr.io/olohmann/ghcp-sdk-oai-wrapper:<version>` |
-| Helm chart (OCI) | `oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper` |
-
-#### Version synchronization
-
-All artifacts share the same semantic version derived from the git tag:
-
-- **Binary:** `ghcp-sdk-oai-wrapper --version` → `1.2.3`
-- **Docker tags:** `1.2.3`, `1.2`, `1`, `sha-<commit>`
-- **Helm chart:** `version: 1.2.3`, `appVersion: "1.2.3"`
-- **Helm default image tag:** resolves to `appVersion` (= `1.2.3`)
-
-### Supply chain security
-
-Every release image is secured with multiple layers of verification:
+## 🔒 Supply-chain security
 
 | Feature | Tool | Purpose |
-|---------|------|---------|
-| **Image signing** | [cosign](https://docs.sigstore.dev/cosign/) (keyless/Sigstore OIDC) | Proves the image was built by this repository's GitHub Actions workflow |
-| **Build provenance** | [GitHub Attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) (SLSA) | Cryptographic proof of build inputs, environment, and steps |
-| **SBOM** | Docker BuildKit built-in | Software Bill of Materials attached to the image manifest |
-| **Vulnerability scan** | [Trivy](https://trivy.dev/) | Blocks releases with CRITICAL vulnerabilities |
-| **OCI labels** | [docker/metadata-action](https://github.com/docker/metadata-action) | Standardized OCI annotations (source, revision, vendor, etc.) |
-| **Go vuln check** | [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | Checks Go dependencies against the Go vulnerability database |
-| **Reproducible builds** | `-trimpath` flag | Strips local paths from binaries for reproducibility |
-
-#### Verify an image signature
+|---|---|---|
+| Image signing | [cosign](https://docs.sigstore.dev/cosign/) (keyless) | Proves the image was built by this repository's workflow |
+| Build provenance | [GitHub Attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) (SLSA) | Records build inputs, environment, and steps |
+| SBOM | BuildKit | Software Bill of Materials attached to the image |
+| Image scanning | [Trivy](https://trivy.dev/) | CRITICAL/HIGH findings reported to GitHub code scanning |
+| Go vulnerabilities | [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) | Checks dependencies against the Go vulnerability database |
+| Minimal runtime | distroless | No shell or package manager in the image |
 
 ```bash
 cosign verify \
   --certificate-identity-regexp "https://github.com/olohmann/ghcp-sdk-oai-wrapper/" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3
+  ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.0.0
+
+gh attestation verify oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.0.0 --owner olohmann
 ```
 
-#### Verify build provenance
+## 🧑‍💻 Development
 
 ```bash
-gh attestation verify \
-  oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3 \
-  --owner olohmann
+make test        # unit tests (stdlib testing + httptest)
+make lint        # go vet
+make test-e2e    # live integration tests; requires an authenticated Copilot CLI
+E2E_MODEL=<model-id> make test-e2e
+make help        # all targets
 ```
 
-### Installing from released artifacts
-
-```bash
-# Docker
-docker pull ghcr.io/olohmann/ghcp-sdk-oai-wrapper:1.2.3
-
-# Helm (OCI)
-helm install copilot-proxy \
-  oci://ghcr.io/olohmann/ghcp-sdk-oai-wrapper/charts/ghcp-sdk-oai-wrapper \
-  --version 1.2.3 \
-  --set secrets.githubToken=ghp_...
+```text
+cmd/server/              Entrypoint, flags, health-check subcommand
+internal/config/         Environment and flag configuration
+internal/copilot/        Copilot SDK client, session lifecycle and tool RPCs
+internal/handler/        OpenAI handlers: chat, tools and parking, models, health
+internal/oai/            OpenAI types and SSE writer
+internal/ollama/         Self-contained Ollama API: types, NDJSON, handlers
+internal/middleware/     Bearer-token auth
+internal/metrics/        Prometheus metrics and middleware
+test/e2e/                Build-tagged end-to-end tests
+charts/                  Helm chart
 ```
 
-### Local versioned builds
+### CI and releases
 
-```bash
-# Build with a specific version
-VERSION=1.2.3 make build
+- **CI** (`ci.yml`) runs on pushes and pull requests.
+  - Go build, tests, vet, and `govulncheck`
+  - Commit-identity checks
+  - Helm lint
+  - Docker build, smoke test, and Trivy scan
+- **Release** (`release.yml`) runs when you push a `v*` tag, such as
+  `git tag v1.2.3 && git push origin v1.2.3`.
+  - Validate the build.
+  - Build the binaries (linux/darwin × amd64/arm64), Docker image, and Helm chart.
+  - Publish them as a GitHub Release with checksums.
+  - All artifacts share the tag's version. Docker tags are `1.2.3`, `1.2`, `1`, and
+    `sha-<commit>`.
 
-# Docker build with version
-VERSION=1.2.3 make docker-build
-```
+## 📄 License
 
-## License
-
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+[MIT](LICENSE) © Oliver Lohmann
