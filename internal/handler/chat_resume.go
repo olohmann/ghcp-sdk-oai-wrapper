@@ -46,7 +46,7 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 	if err := updateToolDeclarations(ctx, session, req); err != nil {
 		logger.Error("failed to update session tools", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to update session tools", "server_error")
+		writeCompletionOperationError(ctx, w, nil, "failed to update session tools", logger)
 		return
 	}
 
@@ -54,11 +54,15 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 	var events []*copilot.ExternalToolRequestedData
 	var finalText string
 	toolCh := make(chan struct{}, 1)
-	idleCh := make(chan struct{})
-	var idleOnce sync.Once
+	state := newCompletionState()
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		if state.failed() {
+			return
+		}
 		switch d := event.Data.(type) {
+		case *copilot.SessionErrorData:
+			state.fail(event, d)
 		case *copilot.ExternalToolRequestedData:
 			mu.Lock()
 			events = append(events, d)
@@ -74,18 +78,22 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 				mu.Unlock()
 			}
 		case *copilot.SessionIdleData:
-			idleOnce.Do(func() { close(idleCh) })
+			state.finish()
 		}
 	})
 	defer unsubscribe()
 
 	// Resolve the pending call(s) on a detached context so the parked session's
 	// continuation is not tied to this request's lifetime.
-	sessCtx := context.WithoutCancel(ctx)
+	sessCtx, cancel := detachedCompletionContext(ctx)
+	defer cancel()
 	if err := resolvePending(sessCtx, session, parked.pending, resultsByToolCallID(req.Messages), logger); err != nil {
+		if state.failResponse(ctx, w, nil, req, start, logger) {
+			return
+		}
 		logger.Error("failed to resolve pending tool call", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to resolve tool result", "server_error")
+		writeCompletionOperationError(sessCtx, w, nil, "failed to resolve tool result", logger)
 		return
 	}
 
@@ -93,6 +101,9 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 	case <-toolCh:
 		// Multi-step: the model wants more tools. Re-park and emit tool_calls.
 		collectDebounce(ctx, toolCh, toolEmitDebounce)
+		if state.failResponse(ctx, w, nil, req, start, logger) {
+			return
+		}
 		mu.Lock()
 		evs := append([]*copilot.ExternalToolRequestedData(nil), events...)
 		mu.Unlock()
@@ -104,7 +115,10 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 		metrics.RecordCompletion(req.Model, false, "success", time.Since(start))
 		oai.WriteJSON(w, http.StatusOK, toolCallsResponse(req, calls))
 
-	case <-idleCh:
+	case <-state.done:
+		if state.failResponse(ctx, w, nil, req, start, logger) {
+			return
+		}
 		mu.Lock()
 		text := finalText
 		mu.Unlock()
@@ -112,13 +126,7 @@ func handleToolResumeNonStreaming(ctx context.Context, w http.ResponseWriter, re
 		oai.WriteJSON(w, http.StatusOK, stopResponse(req, text))
 
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during tool resume", "cause", ctx.Err(), "elapsed", time.Since(start).String())
-		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-
-	case <-time.After(5 * time.Minute):
-		logger.Warn("tool resume timeout reached", "elapsed", time.Since(start).String())
-		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusGatewayTimeout, "tool resume timeout", "server_error")
+		state.failResponse(ctx, w, nil, req, start, logger)
 	}
 }
 
@@ -152,7 +160,7 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 	if err := updateToolDeclarations(ctx, session, req); err != nil {
 		logger.Error("failed to update session tools", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to update session tools", "server_error")
+		writeCompletionOperationError(ctx, w, nil, "failed to update session tools", logger)
 		return
 	}
 
@@ -190,11 +198,15 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 	var gotTool atomic.Bool
 	var gotDelta atomic.Bool
 	toolCh := make(chan struct{}, 1)
-	idleCh := make(chan struct{})
-	var idleOnce sync.Once
+	state := newCompletionState()
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		if state.failed() {
+			return
+		}
 		switch d := event.Data.(type) {
+		case *copilot.SessionErrorData:
+			state.fail(event, d)
 		case *copilot.ExternalToolRequestedData:
 			gotTool.Store(true)
 			mu.Lock()
@@ -222,22 +234,29 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 				})
 			}
 		case *copilot.SessionIdleData:
-			idleOnce.Do(func() { close(idleCh) })
+			state.finish()
 		}
 	})
 	defer unsubscribe()
 
-	sessCtx := context.WithoutCancel(ctx)
+	sessCtx, cancel := detachedCompletionContext(ctx)
+	defer cancel()
 	if err := resolvePending(sessCtx, session, parked.pending, resultsByToolCallID(req.Messages), logger); err != nil {
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		logger.Error("failed to resolve pending tool call", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		finish()
+		writeCompletionOperationError(sessCtx, w, sse, "failed to resolve tool result", logger)
 		return
 	}
 
 	select {
 	case <-toolCh:
 		collectDebounce(ctx, toolCh, toolEmitDebounce)
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		mu.Lock()
 		evs := append([]*copilot.ExternalToolRequestedData(nil), events...)
 		mu.Unlock()
@@ -250,7 +269,10 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 		logger.Info("tool calls emitted; session re-parked (multi-step)", "count", len(calls), "token", token)
 		metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
 
-	case <-idleCh:
+	case <-state.done:
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		send(oai.ChatCompletionChunk{
 			ID: completionID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 			Choices: []oai.Choice{{Index: 0, Delta: &oai.DeltaMessage{}, FinishReason: oai.StringPtr("stop")}},
@@ -259,13 +281,7 @@ func handleToolResumeStreaming(ctx context.Context, w http.ResponseWriter, regis
 		metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
 
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during tool resume", "cause", ctx.Err(), "elapsed", time.Since(start).String())
-		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-
-	case <-time.After(5 * time.Minute):
-		logger.Warn("tool resume timeout reached", "elapsed", time.Since(start).String())
-		finish()
-		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
+		state.failResponse(ctx, w, sse, req, start, logger)
 	}
 }
 

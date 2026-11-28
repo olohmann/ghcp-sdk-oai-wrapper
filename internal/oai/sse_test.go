@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/olohmann/ghcp-sdk-oai-wrapper/internal/oai"
@@ -84,6 +86,45 @@ func TestSSEWriter(t *testing.T) {
 	}
 	if !contains(body, "[DONE]") {
 		t.Error("expected [DONE] in body")
+	}
+}
+
+func TestSSEWriterConcurrentTermination(t *testing.T) {
+	rec := httptest.NewRecorder()
+	sse, err := oai.NewSSEWriter(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if err := sse.WriteEvent(map[string]string{"content": strings.Repeat("synthetic", 256)}); err != nil && err.Error() != "SSE stream already completed" {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := sse.WriteDone(); err != nil {
+			t.Error(err)
+		}
+	}()
+	close(start)
+	wg.Wait()
+	body := rec.Body.String()
+	if strings.Count(body, "data: [DONE]") != 1 || !strings.HasSuffix(body, "data: [DONE]\n\n") {
+		t.Fatalf("events appeared after stream termination: %s", body)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" && !json.Valid([]byte(strings.TrimPrefix(line, "data: "))) {
+			t.Fatalf("concurrent events were interleaved: %s", line)
+		}
 	}
 }
 

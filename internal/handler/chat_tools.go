@@ -44,13 +44,14 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 
 	// The session is parked (kept alive) between turn-1 and turn-2, so it must
 	// outlive this HTTP request: create and drive it with a detached context.
-	sessCtx := context.WithoutCancel(ctx)
+	sessCtx, cancel := detachedCompletionContext(ctx)
+	defer cancel()
 	tools := toolsToSDK(req.Tools) // declaration-only => calls stay pending
 	session, err := createSession(sessCtx, client, req, false, tools)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to create session", "server_error")
+		writeCompletionOperationError(sessCtx, w, nil, "failed to create session", logger)
 		return
 	}
 	parked := false
@@ -64,11 +65,15 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 	var events []*copilot.ExternalToolRequestedData
 	var finalText string
 	toolCh := make(chan struct{}, 1)
-	idleCh := make(chan struct{})
-	var idleOnce sync.Once
+	state := newCompletionState()
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		if state.failed() {
+			return
+		}
 		switch d := event.Data.(type) {
+		case *copilot.SessionErrorData:
+			state.fail(event, d)
 		case *copilot.ExternalToolRequestedData:
 			mu.Lock()
 			events = append(events, d)
@@ -84,23 +89,27 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 				mu.Unlock()
 			}
 		case *copilot.SessionIdleData:
-			idleOnce.Do(func() { close(idleCh) })
+			state.finish()
 		}
 	})
 	defer unsubscribe()
 
-	sendCtx, cancel := context.WithTimeout(sessCtx, 5*time.Minute)
-	defer cancel()
-	if _, err := session.Send(sendCtx, copilot.MessageOptions{Prompt: buildPrompt(req.Messages), Attachments: attachments}); err != nil {
+	if _, err := session.Send(sessCtx, copilot.MessageOptions{Prompt: buildPrompt(req.Messages), Attachments: attachments}); err != nil {
+		if state.failResponse(ctx, w, nil, req, start, logger) {
+			return
+		}
 		logger.Error("failed to send message", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to get completion", "server_error")
+		writeCompletionOperationError(sessCtx, w, nil, "failed to get completion", logger)
 		return
 	}
 
 	select {
 	case <-toolCh:
 		collectDebounce(ctx, toolCh, toolEmitDebounce)
+		if state.failResponse(ctx, w, nil, req, start, logger) {
+			return
+		}
 		mu.Lock()
 		evs := append([]*copilot.ExternalToolRequestedData(nil), events...)
 		mu.Unlock()
@@ -112,7 +121,10 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 		metrics.RecordCompletion(req.Model, false, "success", time.Since(start))
 		oai.WriteJSON(w, http.StatusOK, toolCallsResponse(req, calls))
 
-	case <-idleCh:
+	case <-state.done:
+		if state.failResponse(ctx, w, nil, req, start, logger) {
+			return
+		}
 		mu.Lock()
 		text := finalText
 		mu.Unlock()
@@ -120,13 +132,7 @@ func handleToolEmitNonStreaming(ctx context.Context, w http.ResponseWriter, clie
 		oai.WriteJSON(w, http.StatusOK, stopResponse(req, text))
 
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during tool emit", "cause", ctx.Err(), "elapsed", time.Since(start).String())
-		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-
-	case <-time.After(5 * time.Minute):
-		logger.Warn("tool emit timeout reached", "elapsed", time.Since(start).String())
-		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusGatewayTimeout, "tool emission timeout", "server_error")
+		state.failResponse(ctx, w, nil, req, start, logger)
 	}
 }
 
@@ -162,14 +168,14 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 
 	// The session is parked (kept alive) between turn-1 and turn-2, so it must
 	// outlive this HTTP request: create and drive it with a detached context.
-	sessCtx := context.WithoutCancel(ctx)
+	sessCtx, cancel := detachedCompletionContext(ctx)
+	defer cancel()
 	tools := toolsToSDK(req.Tools) // declaration-only => calls stay pending
 	session, err := createSession(sessCtx, client, req, true, tools)
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		_ = sse.WriteEvent(oai.ErrorResponse{Error: oai.ErrorDetail{Message: "failed to create session", Type: "server_error"}})
-		_ = sse.WriteDone()
+		writeCompletionOperationError(sessCtx, w, sse, "failed to create session", logger)
 		return
 	}
 	parked := false
@@ -206,11 +212,15 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 	var gotTool atomic.Bool
 	var gotDelta atomic.Bool
 	toolCh := make(chan struct{}, 1)
-	idleCh := make(chan struct{})
-	var idleOnce sync.Once
+	state := newCompletionState()
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		if state.failed() {
+			return
+		}
 		switch d := event.Data.(type) {
+		case *copilot.SessionErrorData:
+			state.fail(event, d)
 		case *copilot.ExternalToolRequestedData:
 			gotTool.Store(true)
 			mu.Lock()
@@ -238,21 +248,27 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 				})
 			}
 		case *copilot.SessionIdleData:
-			idleOnce.Do(func() { close(idleCh) })
+			state.finish()
 		}
 	})
 	defer unsubscribe()
 
 	if _, err := session.Send(sessCtx, copilot.MessageOptions{Prompt: buildPrompt(req.Messages), Attachments: attachments}); err != nil {
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		logger.Error("failed to send message", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		finish()
+		writeCompletionOperationError(sessCtx, w, sse, "failed to get completion", logger)
 		return
 	}
 
 	select {
 	case <-toolCh:
 		collectDebounce(ctx, toolCh, toolEmitDebounce)
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		mu.Lock()
 		evs := append([]*copilot.ExternalToolRequestedData(nil), events...)
 		mu.Unlock()
@@ -265,7 +281,10 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 		logger.Info("tool calls emitted; session parked", "count", len(calls), "token", token)
 		metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
 
-	case <-idleCh:
+	case <-state.done:
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		send(oai.ChatCompletionChunk{
 			ID: completionID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 			Choices: []oai.Choice{{Index: 0, Delta: &oai.DeltaMessage{}, FinishReason: oai.StringPtr("stop")}},
@@ -274,13 +293,7 @@ func handleToolEmitStreaming(ctx context.Context, w http.ResponseWriter, client 
 		metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
 
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during tool emit", "cause", ctx.Err(), "elapsed", time.Since(start).String())
-		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-
-	case <-time.After(5 * time.Minute):
-		logger.Warn("tool emit timeout reached", "elapsed", time.Since(start).String())
-		finish()
-		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
+		state.failResponse(ctx, w, sse, req, start, logger)
 	}
 }
 

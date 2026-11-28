@@ -77,15 +77,22 @@ func toolUpdateTestSession(t *testing.T, reject string) (*copilot.Session, <-cha
 				result = map[string]any{"ok": true, "protocolVersion": 3, "version": "test"}
 			case "session.create":
 				result = map[string]any{"sessionId": "test-session"}
+			case "session.send":
+				result = map[string]any{"messageId": "test-message"}
 			case "session.tools.set", "session.tools.handlePendingToolCall":
 				requests <- request
 			case "session.options.update":
 				requests <- request
 				result = map[string]any{"success": reject != "options-refused"}
 			}
+			if (reject == "stall-result" && request.Method == "session.tools.handlePendingToolCall") ||
+				(reject == "stall-send" && request.Method == "session.send") ||
+				(reject == "stall-update" && request.Method == "session.tools.set") {
+				continue
+			}
 			response := map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result}
 			// Stop at result delivery; this fixture never runs a real model.
-			if request.Method == reject || (request.Method == "session.tools.handlePendingToolCall" && reject != "emit-discovered") {
+			if request.Method == reject || (request.Method == "session.tools.handlePendingToolCall" && reject != "emit-discovered" && !strings.HasPrefix(reject, "session-error") && reject != "stall") {
 				delete(response, "result")
 				response["error"] = map[string]any{"code": -32603, "message": "test RPC rejected"}
 			}
@@ -97,7 +104,8 @@ func toolUpdateTestSession(t *testing.T, reject string) (*copilot.Session, <-cha
 			if _, err := fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n%s", len(data), data); err != nil {
 				return
 			}
-			if request.Method == "session.tools.handlePendingToolCall" && reject == "emit-discovered" {
+			if (request.Method == "session.tools.handlePendingToolCall" || request.Method == "session.send") &&
+				(reject == "emit-discovered" || strings.HasPrefix(reject, "session-error")) {
 				event := copilot.SessionEvent{
 					ID: "discovered-call", Timestamp: time.Now(),
 					Data: &copilot.ExternalToolRequestedData{
@@ -106,17 +114,42 @@ func toolUpdateTestSession(t *testing.T, reject string) (*copilot.Session, <-cha
 						Arguments: map[string]any{"text": "synthetic transcript"},
 					},
 				}
-				notification := map[string]any{
-					"jsonrpc": "2.0", "method": "session.event",
-					"params": map[string]any{"sessionId": "test-session", "event": event},
+				if strings.HasPrefix(reject, "session-error") {
+					failure := &copilot.SessionErrorData{ErrorType: "query", Message: "synthetic model failure"}
+					if reject == "session-error-rate-limit" {
+						status := int32(http.StatusTooManyRequests)
+						failure.StatusCode = &status
+						failure.ProviderErrorType = copilot.String("rate_limit_error")
+						failure.ProviderErrorCode = copilot.String("synthetic_rate_limit")
+					}
+					event.Data = failure
 				}
-				data, err := json.Marshal(notification)
-				if err != nil {
-					t.Error(err)
-					return
+				events := []copilot.SessionEvent{event}
+				if reject == "session-error-tool" {
+					events = append([]copilot.SessionEvent{{
+						ID: "tool-before-error", Timestamp: time.Now(),
+						Data: &copilot.ExternalToolRequestedData{
+							SessionID: "test-session", RequestID: "pending-failed-tool",
+							ToolCallID: "failed-tool-call", ToolName: "search_tools",
+						},
+					}}, events...)
 				}
-				if _, err := fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n%s", len(data), data); err != nil {
-					return
+				if reject == "session-error-idle" {
+					events = append(events, copilot.SessionEvent{ID: "idle-after-error", Timestamp: time.Now(), Data: &copilot.SessionIdleData{}})
+				}
+				for _, event := range events {
+					notification := map[string]any{
+						"jsonrpc": "2.0", "method": "session.event",
+						"params": map[string]any{"sessionId": "test-session", "event": event},
+					}
+					data, err := json.Marshal(notification)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if _, err := fmt.Fprintf(conn, "Content-Length: %d\r\n\r\n%s", len(data), data); err != nil {
+						return
+					}
 				}
 			}
 		}

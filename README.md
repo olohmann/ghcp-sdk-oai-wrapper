@@ -123,6 +123,18 @@ call. Continuations must reach that instance; expired sessions, server restarts,
 and requests reaching another replica still return HTTP 409. This does not
 replay or re-execute tools automatically.
 
+### Completion Failures
+
+OpenAI chat requests have a five-minute completion budget, including session
+setup and pending tool-result RPCs. SDK session errors are logged and returned
+explicitly rather than being treated as empty successful answers.
+Non-streaming tool failures preserve a reported upstream HTTP error status
+(otherwise HTTP 500), and provider error types/codes when supplied. Deadline
+expiry returns HTTP 504.
+Once SSE starts, failures are sent as an OpenAI `error` event followed by
+`[DONE]`, without a successful `finish_reason`. Tool sessions still survive
+between requests; this does not replay tools or extend expired sessions.
+
 ### Reasoning Effort
 
 For models that support it, set `reasoning_effort` on chat completion requests:

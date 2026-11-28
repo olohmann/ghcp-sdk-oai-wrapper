@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -56,6 +55,10 @@ func ChatCompletions(client chatClient, registry *ToolSessionRegistry, logger *s
 			oai.WriteError(w, http.StatusBadRequest, "messages is required", "invalid_request_error")
 			return
 		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), completionTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
 
 		// Enrich logger with client identity for debugging disconnects
 		reqLogger := logger.With(
@@ -178,12 +181,12 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client chatC
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to create session", "server_error")
+		writeCompletionOperationError(ctx, w, nil, "failed to create session", logger)
 		return
 	}
 	defer client.ReleaseSession(session)
 
-	sendCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	sendCtx, cancel := context.WithTimeout(ctx, completionTimeout)
 	defer cancel()
 
 	reply, err := session.SendAndWait(sendCtx, copilot.MessageOptions{
@@ -193,7 +196,7 @@ func handleNonStreaming(ctx context.Context, w http.ResponseWriter, client chatC
 	if err != nil {
 		logger.Error("failed to send message", "error", err)
 		metrics.RecordCompletion(req.Model, false, "error", time.Since(start))
-		oai.WriteError(w, http.StatusInternalServerError, "failed to get completion", "server_error")
+		writeCompletionOperationError(sendCtx, w, nil, "failed to get completion", logger)
 		return
 	}
 
@@ -256,10 +259,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClie
 	if err != nil {
 		logger.Error("failed to create session", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		_ = sse.WriteEvent(oai.ErrorResponse{
-			Error: oai.ErrorDetail{Message: "failed to create session", Type: "server_error"},
-		})
-		_ = sse.WriteDone()
+		writeCompletionOperationError(ctx, w, sse, "failed to create session", logger)
 		return
 	}
 	defer client.ReleaseSession(session)
@@ -267,8 +267,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClie
 	completionID := oai.NewCompletionID()
 	created := oai.NowUnix()
 
-	done := make(chan struct{})
-	var once sync.Once
+	state := newCompletionState()
 	var gotDelta atomic.Bool
 	var writeErrors atomic.Int64
 
@@ -290,7 +289,12 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClie
 	}
 
 	unsubscribe := session.On(func(event copilot.SessionEvent) {
+		if state.failed() {
+			return
+		}
 		switch d := event.Data.(type) {
+		case *copilot.SessionErrorData:
+			state.fail(event, d)
 		case *copilot.AssistantMessageDeltaData:
 			gotDelta.Store(true)
 			if d.DeltaContent != "" {
@@ -334,23 +338,7 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClie
 			}
 
 		case *copilot.SessionIdleData:
-			metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
-			// Send the final chunk with finish_reason
-			_ = sse.WriteEvent(oai.ChatCompletionChunk{
-				ID:      completionID,
-				Object:  "chat.completion.chunk",
-				Created: created,
-				Model:   req.Model,
-				Choices: []oai.Choice{
-					{
-						Index:        0,
-						Delta:        &oai.DeltaMessage{},
-						FinishReason: oai.StringPtr("stop"),
-					},
-				},
-			})
-			_ = sse.WriteDone()
-			once.Do(func() { close(done) })
+			state.finish()
 		}
 	})
 	defer unsubscribe()
@@ -360,29 +348,29 @@ func handleStreaming(ctx context.Context, w http.ResponseWriter, client chatClie
 		Attachments: attachments,
 	})
 	if err != nil {
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
 		logger.Error("failed to send message", "error", err)
 		metrics.RecordCompletion(req.Model, true, "error", time.Since(start))
-		_ = sse.WriteDone()
-		once.Do(func() { close(done) })
+		writeCompletionOperationError(ctx, w, sse, "failed to get completion", logger)
 		return
 	}
 
 	// Wait for completion or context cancellation
 	select {
-	case <-done:
+	case <-state.done:
+		if state.failResponse(ctx, w, sse, req, start, logger) {
+			return
+		}
+		metrics.RecordCompletion(req.Model, true, "success", time.Since(start))
+		_ = sse.WriteEvent(oai.ChatCompletionChunk{
+			ID: completionID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+			Choices: []oai.Choice{{Index: 0, Delta: &oai.DeltaMessage{}, FinishReason: oai.StringPtr("stop")}},
+		})
+		_ = sse.WriteDone()
 	case <-ctx.Done():
-		logger.Warn("request context cancelled during streaming",
-			"cause", ctx.Err(),
-			"elapsed", time.Since(start).String(),
-			"got_delta", gotDelta.Load(),
-			"write_errors", writeErrors.Load(),
-		)
-	case <-time.After(5 * time.Minute):
-		logger.Warn("streaming timeout reached",
-			"elapsed", time.Since(start).String(),
-			"got_delta", gotDelta.Load(),
-			"write_errors", writeErrors.Load(),
-		)
+		state.failResponse(ctx, w, sse, req, start, logger.With("got_delta", gotDelta.Load(), "write_errors", writeErrors.Load()))
 	}
 }
 

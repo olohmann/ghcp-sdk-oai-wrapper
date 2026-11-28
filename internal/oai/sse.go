@@ -4,12 +4,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 // SSEWriter writes Server-Sent Events to an http.ResponseWriter.
 type SSEWriter struct {
 	w       http.ResponseWriter
 	flusher http.Flusher
+	mu      sync.Mutex
+	done    bool
 }
 
 // NewSSEWriter creates a new SSE writer and sets appropriate headers.
@@ -32,6 +35,11 @@ func NewSSEWriter(w http.ResponseWriter) (*SSEWriter, error) {
 
 // WriteEvent writes a single SSE data event with JSON payload.
 func (s *SSEWriter) WriteEvent(v any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return fmt.Errorf("SSE stream already completed")
+	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal SSE event: %w", err)
@@ -48,6 +56,12 @@ func (s *SSEWriter) WriteEvent(v any) error {
 
 // WriteDone writes the final [DONE] marker.
 func (s *SSEWriter) WriteDone() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.done {
+		return nil
+	}
+	s.done = true
 	_, err := fmt.Fprint(s.w, "data: [DONE]\n\n")
 	if err != nil {
 		return fmt.Errorf("write SSE done: %w", err)
