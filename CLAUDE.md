@@ -16,6 +16,12 @@ make run            # Build and run the server
 - The release pipeline runs: validate (build+test+lint) -> binaries (4 platforms) -> docker (multi-arch + trivy + cosign) -> helm -> github-release.
 - The Trivy scan and cosign signing steps are non-blocking (`continue-on-error: true`) because they depend on external infrastructure.
 
+## Commit Identity
+
+- Commit with the locally configured git identity. **Never** set or override `user.name`/`user.email` (no `git config user.*`, no `git -c user.email=…`, no `--author`, no `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env vars).
+- Never invent emails such as `<login>@users.noreply.github.com` or `@example.com`: GitHub attributes legacy noreply addresses to whichever account owns that login. CI rejects such commits.
+- `.mailmap` maps historical identities; keep it.
+
 ## Architecture
 
 Dual-mode HTTP server wrapping the GitHub Copilot SDK:

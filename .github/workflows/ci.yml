@@ -35,6 +35,27 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  commit-identity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      # Legacy noreply addresses (<login>@users.noreply.github.com, no numeric id) attribute
+      # commits to whichever GitHub account owns <login>; placeholder domains are never valid.
+      - name: Reject misattributed commit identities
+        run: |
+          bad=$(git log --format='%h %ae %ce' | awk '{
+            for (i = 2; i <= 3; i++)
+              if ($i ~ /@example\.(com|org|net)$/ || $i ~ /^[^+]+@users\.noreply\.github\.com$/) { print; break }
+          }')
+          if [ -n "$bad" ]; then
+            echo "::error::Commits with invalid author/committer email found:"
+            echo "$bad"
+            exit 1
+          fi
+
   helm-lint:
     runs-on: ubuntu-latest
     steps:

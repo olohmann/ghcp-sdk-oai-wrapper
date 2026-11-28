@@ -58,3 +58,4 @@ Each chat completion request creates and destroys its own `copilot.Session` — 
 - **E2E tests are build-tag gated** with `//go:build e2e`. They spin up the real server binary and require an authenticated Copilot CLI.
 - **Unit tests** use stdlib `testing` + `httptest` only. No test frameworks.
 - **Configuration** is environment-variable-based (PORT, API_KEY, LOG_LEVEL, COPILOT_CLI_PATH, MODE, DEFAULT_MODEL). CLI flags (`--port`, `--mode`, `--default-model`) override env vars.
+- **Commit identity**: commit with the locally configured git identity. Never set or override `user.name`/`user.email` (no `git config user.*`, `git -c user.email=…`, `--author`, or `GIT_AUTHOR_*`/`GIT_COMMITTER_*`). Never invent emails like `<login>@users.noreply.github.com` or `@example.com` — GitHub attributes legacy noreply addresses to whoever owns that login. CI rejects such commits.
